@@ -23,7 +23,8 @@ if (Test-Path "$HOME\.pi\.git") {
     Write-Host "${esc}[1;37mArete found. Pulling latest updates...${esc}[0m"
     Push-Location "$HOME\.pi"
     git fetch origin 2>&1 | Out-Null
-    git reset --hard @{upstream} 2>&1 | Out-Null
+    $branch = (git rev-parse --abbrev-ref HEAD 2>$null).Trim()
+    git reset --hard "origin/$branch" 2>&1 | Out-Null
     Pop-Location
 } else {
     Write-Host "${esc}[1;37mDownloading latest Arete...${esc}[0m"
