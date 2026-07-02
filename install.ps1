@@ -18,14 +18,22 @@ if (Test-Path "$HOME\.pi\agent") {
     robocopy $HOME\.pi\agent $HOME\.pi\agent.bak /E /XD node_modules | Out-Null
 }
 
-# 3. Download Arete to a temporary folder and apply it
-Write-Host "${esc}[1;37mDownloading latest Arete...${esc}[0m"
-if (Test-Path "$HOME\.pi\arete_temp") {
+# 3. Update Arete — git pull if already a repo, else clone-temp-copy
+if (Test-Path "$HOME\.pi\.git") {
+    Write-Host "${esc}[1;37mArete found. Pulling latest updates...${esc}[0m"
+    Push-Location "$HOME\.pi"
+    git pull 2>&1 | Out-Null
+    Pop-Location
+} else {
+    Write-Host "${esc}[1;37mDownloading latest Arete...${esc}[0m"
+    if (Test-Path "$HOME\.pi\arete_temp") {
+        Remove-Item -Path "$HOME\.pi\arete_temp" -Recurse -Force
+    }
+    git clone https://github.com/asterxsk/arete.git "$HOME\.pi\arete_temp" --quiet
+    # robocopy /E copies everything including .git, so ~/.pi becomes a proper repo
+    robocopy $HOME\.pi\arete_temp $HOME\.pi /E /NFL /NDL /NJH /NJS /NC /NS | Out-Null
     Remove-Item -Path "$HOME\.pi\arete_temp" -Recurse -Force
 }
-git clone https://github.com/asterxsk/arete.git "$HOME\.pi\arete_temp" --quiet
-robocopy $HOME\.pi\arete_temp $HOME\.pi /E | Out-Null
-Remove-Item -Path "$HOME\.pi\arete_temp" -Recurse -Force
 
 # 4. Install pi-web-access
 Write-Host "${esc}[1;37mInstalling pi-web-access...${esc}[0m"

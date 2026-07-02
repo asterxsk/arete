@@ -22,12 +22,18 @@ if [ -d "$HOME/.pi/agent" ]; then
     rsync -a --exclude 'node_modules' "$HOME/.pi/agent/" "$HOME/.pi/agent.bak/"
 fi
 
-# 3. Download Arete to a temporary folder and apply it
-echo -e "\033[1;37mDownloading latest Arete...\033[0m"
-rm -rf "$HOME/.pi/arete_temp"
-git clone https://github.com/asterxsk/arete.git "$HOME/.pi/arete_temp" --quiet
-rsync -a "$HOME/.pi/arete_temp/" "$HOME/.pi/"
-rm -rf "$HOME/.pi/arete_temp"
+# 3. Update Arete — git pull if already a repo, else clone-temp-copy with .git
+if [ -d "$HOME/.pi/.git" ]; then
+    echo -e "\033[1;37mArete found. Pulling latest updates...\033[0m"
+    (cd "$HOME/.pi" && git pull)
+else
+    echo -e "\033[1;37mDownloading latest Arete...\033[0m"
+    rm -rf "$HOME/.pi/arete_temp"
+    git clone https://github.com/asterxsk/arete.git "$HOME/.pi/arete_temp" --quiet
+    # rsync -a copies .git (hidden files included), so ~/.pi becomes a proper repo
+    rsync -a "$HOME/.pi/arete_temp/" "$HOME/.pi/"
+    rm -rf "$HOME/.pi/arete_temp"
+fi
 
 # 4. Install pi-web-access
 echo -e "\033[1;37mInstalling pi-web-access...\033[0m"

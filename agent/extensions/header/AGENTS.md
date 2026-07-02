@@ -16,7 +16,7 @@ Renders an ASCII-art banner header with the Arete branding on the left and an in
 - **Dependencies**: `@earendil-works/pi-tui` (`truncateToWidth`, `visibleWidth`)
 - **State**: `infoProvider`, `infoModel`, `requestHeaderRender` module-level variables
 - **UI contract**: `ctx.ui.setHeader(renderFactory)` — must return `{ render, invalidate }` component
-- **Commands**: `/update` — pulls latest Arete updates from GitHub
+- **Commands**: `/update` — updates to the latest Arete from GitHub. Detects whether `~/.pi/` is a git clone (fast path: `git pull`) or was installed via install script (fallback: clone temp → rsync/robocopy → cleanup). Also restores `node_modules` for extensions that need them.
 
 ## Work Guidance
 - Banner art is 5 lines; keep aspect ratio stable when modifying

@@ -6,6 +6,7 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import * as fs from "fs";
 import * as path from "path";
 import { exec } from "child_process";
+import * as os from "os";
 
 const RESET = "\x1b[0m";
 const ORANGE = "\x1b[38;2;255;165;0m";
@@ -117,18 +118,96 @@ export default function (pi: ExtensionAPI) {
       async handler(args: string, ctx: any) {
         if (ctx.hasUI) ctx.ui.notify("Pulling latest Arete update...", "info");
         const piDir = path.join(process.env.USERPROFILE || process.env.HOME || "", ".pi");
-        return new Promise((resolve) => {
-          exec("git pull", { cwd: piDir }, (error, stdout, stderr) => {
-            if (!error) {
-              updateStatus = " \x1b[38;2;100;255;100m(Updated! Restart Pi to apply)\x1b[0m";
-              requestHeaderRender?.();
-              resolve({});
-            } else {
-              updateStatus = " \x1b[38;2;255;100;100m(Update failed)\x1b[0m";
-              requestHeaderRender?.();
-              resolve({ result: `Update failed: ${stderr || error.message}` });
-            }
+        const gitDir = path.join(piDir, ".git");
+
+        const isGitRepo = fs.existsSync(gitDir);
+
+        if (isGitRepo) {
+          // Fast path: ~/.pi is a proper git clone
+          return new Promise((resolve) => {
+            exec("git pull", { cwd: piDir }, (error, stdout, stderr) => {
+              if (!error) {
+                updateStatus = " \x1b[38;2;100;255;100m(Updated! Restart Pi to apply)\x1b[0m";
+                requestHeaderRender?.();
+                resolve({});
+              } else {
+                updateStatus = " \x1b[38;2;255;100;100m(Update failed)\x1b[0m";
+                requestHeaderRender?.();
+                resolve({ result: `Update failed: ${stderr || error.message}` });
+              }
+            });
           });
+        }
+
+        // Fallback: ~/.pi was installed via install.sh/install.ps1 (clone-temp-copy)
+        // Use the same mechanism — clone to temp, sync, delete temp
+        return new Promise((resolve) => {
+          const tempDir = path.join(os.tmpdir(), "arete_update");
+
+          const cleanup = () => {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+          };
+
+          // Step 1: Clone to temp
+          exec(
+            `git clone https://github.com/asterxsk/arete.git "${tempDir}" --quiet`,
+            { cwd: piDir },
+            (cloneErr, _cloneStdout, cloneStderr) => {
+              if (cloneErr) {
+                updateStatus = " \x1b[38;2;255;100;100m(Update failed — could not clone)\x1b[0m";
+                requestHeaderRender?.();
+                cleanup();
+                resolve({ result: `Update failed: could not clone repo — ${cloneStderr || cloneErr.message}` });
+                return;
+              }
+
+              // Step 2: Sync files over
+              const isWin = process.platform === "win32";
+              const syncCmd = isWin
+                ? `robocopy "${tempDir}" "${piDir}" /E /NFL /NDL /NJH /NJS /NC /NS 2>&1`
+                : `rsync -a "${tempDir}/" "${piDir}/" 2>&1`;
+
+              exec(syncCmd, { cwd: piDir }, (syncErr, _syncStdout, syncStderr) => {
+                if (syncErr) {
+                  updateStatus = " \x1b[38;2;255;100;100m(Update failed — could not sync)\x1b[0m";
+                  requestHeaderRender?.();
+                  cleanup();
+                  resolve({ result: `Update failed: could not sync files — ${syncStderr || syncErr.message}` });
+                  return;
+                }
+
+                // Step 3: Cleanup temp
+                cleanup();
+
+                // Step 4: Try restoring node_modules that got overwritten
+                // (rsync/robocopy from a fresh clone loses them)
+                const extDirs = [
+                  path.join(piDir, "agent", "extensions", "filechanges"),
+                  path.join(piDir, "agent", "extensions", "pi-hermes-memory"),
+                ];
+                for (const extDir of extDirs) {
+                  const pkgJson = path.join(extDir, "package.json");
+                  const nmDir = path.join(extDir, "node_modules");
+                  if (fs.existsSync(pkgJson) && !fs.existsSync(nmDir)) {
+                    exec("npm install --production", { cwd: extDir }, () => {});
+                  }
+                }
+
+                // Reload version from updated version.txt
+                const versionPath = path.join(piDir, "version.txt");
+                let newVersion = "";
+                try {
+                  if (fs.existsSync(versionPath)) {
+                    newVersion = fs.readFileSync(versionPath, "utf-8").trim();
+                  }
+                } catch (e) {}
+
+                updateStatus = ` \x1b[38;2;100;255;100m(Updated to v${newVersion || "?"}! Restart Pi to apply)\x1b[0m`;
+                requestHeaderRender?.();
+                resolve({});
+              });
+            }
+          );
         });
       }
     });
