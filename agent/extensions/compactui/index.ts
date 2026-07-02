@@ -765,7 +765,19 @@ export default function (pi: ExtensionAPI) {
 
       if (!expanded) {
         if (result.isError) return compactFailed(theme);
-        return compactSummary(theme, "file edited", diffLines.length, "line");
+        // Count added/removed lines from diff (exclude hunk headers +++/---)
+        let added = 0;
+        let removed = 0;
+        for (const dl of diffLines) {
+          if (dl.startsWith("+") && !dl.startsWith("+++")) added++;
+          if (dl.startsWith("-") && !dl.startsWith("---")) removed++;
+        }
+        let summary = "";
+        if (added > 0) summary += `Added ${added} line${added !== 1 ? "s" : ""}`;
+        if (added > 0 && removed > 0) summary += ", ";
+        if (removed > 0) summary += `removed ${removed} line${removed !== 1 ? "s" : ""}`;
+        if (!summary) summary = "no changes";
+        return line(INDENT + DIM_GREY + "\u23bf " + summary + "\x1b[39m");
       }
 
       return diffExpandedBox(

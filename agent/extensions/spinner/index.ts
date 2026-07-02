@@ -34,7 +34,7 @@ const FRAME_DWELL: Record<string, number> = {
 	"✧": 1,
 	"★": 1,
 	"☆": 1,
-	"✻": 5, // emphasize this frame — stays 5× longer
+	"✻": 4, // emphasize this frame — stays 4× longer
 };
 
 // ── Fun phrases ────────────────────────────────────────────────────
@@ -91,7 +91,7 @@ let thinkingDisplayed = "";
 
 // Glow effect constants
 const GLOW_SPEED_CPS = 12; // Characters per second — fast sweep
-const TICK_MS = 80; // Animation tick interval
+const TICK_MS = 120; // Animation tick interval
 const GLOW_STEP = GLOW_SPEED_CPS * (TICK_MS / 1000); // chars per tick
 const GLOW_WIDTH = 3; // Exactly 3 visible glow characters
 
@@ -313,7 +313,7 @@ function start(ctx: any): void {
 	ctx.ui.setWorkingIndicator({ frames: [] });
 
 	tick();
-	intervalId = setInterval(tick, 80); // Faster tick for smoother typewriter
+	intervalId = setInterval(tick, TICK_MS); // Animation tick
 }
 
 function stop(): void {

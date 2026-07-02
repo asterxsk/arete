@@ -2,10 +2,11 @@
  * toolkit/statusline — status line footer with provider, model, context usage, and file changes.
  *
  * Renders a footer:
- *   Line 1: <provider> × <model>           <context bar>
- *   Line 2: <file changes>
+ *   Line 1: <provider> × <model $cost>           <↑input ↓output ※ tokens/window>
+ *   Line 2: <~/path>                             <branch (worktree) filechanges>
  */
 
+import { existsSync, statSync, readFileSync } from "fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
@@ -68,52 +69,8 @@ function getContextSafe(ctx: any): ContextInfo {
 	return fallback;
 }
 
-// ── Smooth context colour interpolation ────────────────────────────
-
-const COLOR_STOPS: { at: number; rgb: [number, number, number] }[] = [
-	{ at: 0,   rgb: [120, 224, 160] },  // green (safe)
-	{ at: 30,  rgb: [240, 160,  80] },  // orange (30%+)
-	{ at: 70,  rgb: [248, 204, 133] },  // gold (70%+)
-	{ at: 90,  rgb: [224, 120, 128] },  // red (90%+)
-];
-
-function lerpRgb(a: [number, number, number], b: [number, number, number], t: number): string {
-	const r = Math.round(a[0] + (b[0] - a[0]) * t);
-	const g = Math.round(a[1] + (b[1] - a[1]) * t);
-	const b2 = Math.round(a[2] + (b[2] - a[2]) * t);
-	return toHex([r, g, b2]);
-}
-
-function easeIn(t: number): number {
-	return t * t;
-}
-
-function smoothContextColor(pct: number): string {
-	const clamped = Math.max(0, Math.min(100, pct));
-	for (let i = 0; i < COLOR_STOPS.length - 1; i++) {
-		const lo = COLOR_STOPS[i]!;
-		const hi = COLOR_STOPS[i + 1]!;
-		if (clamped >= lo.at && clamped <= hi.at) {
-			const raw = lo.at === hi.at ? 0 : (clamped - lo.at) / (hi.at - lo.at);
-			return lerpRgb(lo.rgb, hi.rgb, easeIn(raw));
-		}
-	}
-	return lerpRgb(COLOR_STOPS[0]!.rgb, COLOR_STOPS[0]!.rgb, 0);
-}
-
 const WHITE = toHex([255, 255, 255]);
-
-// ── Gradient context visual bar ───────────────────────────────────────
-
-function buildGradientBar(percent: number, segments = 8): string {
-	const clamped = Math.max(0, Math.min(100, Math.round(percent)));
-	const filled = Math.round((clamped / 100) * segments);
-	let result = "";
-	for (let i = 0; i < segments; i++) {
-		result += i < filled ? WHITE + "█" + RESET : "░";
-	}
-	return result;
-}
+const DIM = toHex([128, 128, 130]);
 
 // ── Model name shortener ──────────────────────────────────────────────
 
@@ -125,12 +82,63 @@ function shortModel(raw: string): string {
 	return stripped;
 }
 
+// ── Git helpers ──────────────────────────────────────────────────────
+
+interface GitInfo {
+	branch: string | null;
+	worktree: string | null;
+}
+
+function getGitInfo(cwd: string): GitInfo {
+	const result: GitInfo = { branch: null, worktree: null };
+	try {
+		// Find .git
+		let dir = cwd;
+		let gitPath = "";
+		for (;;) {
+			const candidate = dir + "/.git";
+			if (!existsSync(candidate)) {
+				const parent = dir.substring(0, dir.lastIndexOf("/"));
+				if (parent === dir || !parent) break;
+				dir = parent;
+				continue;
+			}
+			gitPath = candidate;
+			const stat = statSync(gitPath);
+			if (stat.isFile()) {
+				// Linked worktree — parse gitdir to extract worktree name
+				const content = readFileSync(gitPath, "utf8").trim();
+				const m = content.match(/^gitdir:\s*(.+)$/m);
+				if (m) {
+					const linkedDir = m[1]!;
+					const wtMatch = linkedDir.match(/worktrees\/([^/]+)$/);
+					if (wtMatch) result.worktree = wtMatch[1]!;
+					// Read linked HEAD
+					const headPath = linkedDir + "/HEAD";
+					if (existsSync(headPath)) {
+						const head = readFileSync(headPath, "utf8").trim();
+						if (head.startsWith("ref: refs/heads/")) result.branch = head.slice(16);
+					}
+				}
+			} else if (stat.isDirectory()) {
+				const headPath = gitPath + "/HEAD";
+				if (existsSync(headPath)) {
+					const head = readFileSync(headPath, "utf8").trim();
+					if (head.startsWith("ref: refs/heads/")) result.branch = head.slice(16);
+				}
+			}
+			break;
+		}
+	} catch { /* ignore */ }
+	return result;
+}
+
 // ── Extension entry ──────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
 	(globalThis as any).__pi_extension_features?.push({
 		name: "statusline",
-		description: "Status line with provider, model, context usage bar, and file changes count",
+		description: "Status line with provider, model, context usage, token counts, and file changes",
 	});
 
 	let provider = "";
@@ -142,6 +150,8 @@ export default function (pi: ExtensionAPI) {
 	let inputTokens = 0;
 	let outputTokens = 0;
 	let totalCost = 0;
+	let gitBranch: string | null = null;
+	let gitWorktree: string | null = null;
 	let requestRender: (() => void) | undefined;
 	let throttleTimer: ReturnType<typeof setTimeout> | undefined;
 	let throttlePending = false;
@@ -233,6 +243,9 @@ export default function (pi: ExtensionAPI) {
 		contextWindow = info.window;
 		cwd = ctx.cwd || "";
 		accumulateUsage(ctx);
+		const gi = getGitInfo(cwd);
+		gitBranch = gi.branch;
+		gitWorktree = gi.worktree;
 		requestRender?.();
 	}
 
@@ -246,67 +259,75 @@ export default function (pi: ExtensionAPI) {
 				dispose() { requestRender = undefined; },
 				invalidate() {},
 				render(width: number): string[] {
-					// ── Line 1: provider × model ───────────────────
-					const provModel = provider && model
-						? paint(WHITE, provider) + " " + "×" + " " + model
-						: provider
-							? paint(WHITE, provider)
-							: model
-								? model
-								: "";
-
-					// ── Right: context bar + file changes ──────────
-					const bar = buildGradientBar(contextPercent);
-					const tokenStr = contextWindow > 0
-						? `${formatTokens(contextTokens)}/${formatTokens(contextWindow)}`
-						: `${formatTokens(contextTokens)}`;
-					const ctxPart = "※ "
-						+ "[" + bar + "] "
-						+ paint(WHITE, tokenStr);
-
-					const compactCue = contextPercent > 90
-						? "  " + paint(C.red, "\uf06a") + " " + paint(WHITE, "compact!")
-						: "";
-
-					// ── Cost + Token counts ────────────────────────────
-					let tokenPart = "";
-					if (totalCost > 0) {
-						tokenPart = paint(C.orange, formatCost(totalCost)) + " ";
-					}
-					if (inputTokens > 0 || outputTokens > 0) {
-						tokenPart += paint(WHITE, "\u2191" + formatTokens(inputTokens))
-							+ " " + paint(WHITE, "\u2193" + formatTokens(outputTokens));
+					// ── Line 1 left: provider × model $price ────────
+					let left1 = "";
+					if (provider && model) {
+						left1 = paint(WHITE, provider) + " × " + model;
+						if (totalCost > 0) {
+							left1 += " " + paint(C.orange, formatCost(totalCost));
+						}
+					} else if (provider) {
+						left1 = paint(WHITE, provider);
+					} else if (model) {
+						left1 = model;
 					}
 
+					// ── Line 1 right: ↑input ↓output ※ tokens/window ─
+					let line1Right = "";
+					const hasTokens = inputTokens > 0 || outputTokens > 0;
+					const hasContext = contextWindow > 0 || contextTokens > 0;
+					if (hasTokens) {
+						if (inputTokens > 0) {
+							line1Right += paint(C.blue, "↑" + formatTokens(inputTokens));
+						}
+						if (outputTokens > 0) {
+							if (line1Right) line1Right += " ";
+							line1Right += paint(C.purple, "↓" + formatTokens(outputTokens));
+						}
+					}
+					if (hasContext) {
+						if (line1Right) line1Right += "  ";
+						const tokenStr = contextWindow > 0
+							? `${formatTokens(contextTokens)}/${formatTokens(contextWindow)}`
+							: `${formatTokens(contextTokens)}`;
+						const ctxColor = contextPercent > 90 ? C.red
+							: contextPercent > 70 ? C.gold
+								: contextPercent > 30 ? C.orange
+									: WHITE;
+						line1Right += paint(WHITE, "※ ") + paint(ctxColor, tokenStr);
+						if (contextPercent > 90) {
+							line1Right += paint(C.red, " ●");
+						}
+					}
+
+					// ── File changes ────────────────────────────────
 					const counts = (globalThis as any).__pi_filechanges_counts as
 						{ edited: number; created: number } | undefined;
-					let fcPart = "";
-					if (counts && (counts.edited > 0 || counts.created > 0)) {
-						let parts: string[] = [];
-						if (counts.edited > 0) parts.push(paint(C.orange, "\uf040 " + counts.edited));
-						if (counts.created > 0) {
-							parts.push(paint(C.green, "\uf15b\u202f" + counts.created));
-						}
-						fcPart = " " + parts.join(" ");
+					let fcParts: string[] = [];
+					if (gitBranch) {
+						const wt = gitWorktree ? paint(DIM, "(" + gitWorktree + ")") : "";
+						fcParts.push(paint(WHITE, gitBranch) + wt);
 					}
-
-					const line2Right = tokenPart + fcPart;
+					if (counts) {
+						if (counts.edited > 0) fcParts.push(paint(C.orange, " " + counts.edited));
+						if (counts.created > 0) fcParts.push(paint(C.green, " " + counts.created));
+					}
+					const line2Right = fcParts.length > 0 ? " " + fcParts.join(" ") : "";
 
 					// ── Align lines ─────────────────────────────────
 					const lines: string[] = [];
-					if (provModel) {
-						const line1Right = ctxPart + compactCue;
+					if (left1 || line1Right) {
 						const rightW = visibleWidth(line1Right);
 						const avail = width - rightW - 1;
-						const left = truncateToWidth(provModel, Math.max(0, avail), "", true);
-						lines.push(left + line1Right);
+						const l = truncateToWidth(left1, Math.max(0, avail), "", true);
+						lines.push(l + line1Right);
 					}
 					if (line2Right || cwd) {
 						const rightW = visibleWidth(line2Right);
 						const avail = width - rightW - 1;
 						const pathStr = cwd ? paint(C.blue, shortenPath(cwd)) : "";
-						const left = truncateToWidth(pathStr, Math.max(0, avail), "", true);
-						lines.push(left + line2Right);
+						const l = truncateToWidth(pathStr, Math.max(0, avail), "", true);
+						lines.push((l || "") + line2Right);
 					}
 					return lines;
 				},
@@ -368,7 +389,5 @@ function demo(): void {
 	console.assert(formatTokens(999) === "999", "999");
 	console.assert(shortModel("openai/gpt-4o-mini") === "gpt-4o-mini", "shortModel keeps short names");
 	console.assert(shortModel("deepseek/deepseek-reasoner-model-v4-flash") === "ds-reasoner-model-v4-flash", "deepseek shortens");
-	console.assert(smoothContextColor(0) === "\x1b[38;2;120;224;160m", "green");
-	console.assert(buildGradientBar(50, 8).includes("█"), "bar has filled segments");
 }
 // demo(); // uncomment to run

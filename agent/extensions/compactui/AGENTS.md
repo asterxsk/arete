@@ -35,7 +35,7 @@ Re-registers built-in tools with compact visual rendering (single-line calls, ex
 - Summary texts by tool:
   - `read`: "read tool output"
   - `write`: "file written"
-  - `edit`: "file edited"
+  - `edit`: "Added N lines, removed M lines" (parsed from diff)
   - `bash`, `pwsh`, `run_command`, `ls`, `grep`, `find`: "read terminal output"
   - `web_search`: "read search results"
   - `web_fetch`/`fetch_content`: "read web page"
