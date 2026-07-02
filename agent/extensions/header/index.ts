@@ -5,7 +5,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import * as fs from "fs";
 import * as path from "path";
-import { exec } from "child_process";
+import { execSync } from "child_process";
 import * as os from "os";
 
 const RESET = "\x1b[0m";
@@ -124,91 +124,92 @@ export default function (pi: ExtensionAPI) {
 
         if (isGitRepo) {
           // Fast path: ~/.pi is a proper git clone
-          return new Promise((resolve) => {
-            exec("git pull", { cwd: piDir }, (error, stdout, stderr) => {
-              if (!error) {
-                updateStatus = " \x1b[38;2;100;255;100m(Updated! Restart Pi to apply)\x1b[0m";
-                requestHeaderRender?.();
-                resolve({});
-              } else {
-                updateStatus = " \x1b[38;2;255;100;100m(Update failed)\x1b[0m";
-                requestHeaderRender?.();
-                resolve({ result: `Update failed: ${stderr || error.message}` });
-              }
-            });
-          });
+          // fetch + reset --hard handles tracked changes, untracked conflicts,
+          // and leaves ignored files (like config, node_modules) untouched
+          try {
+            execSync("git fetch origin", { cwd: piDir, stdio: "pipe" });
+            // Reset to upstream branch (handles any branch name)
+            execSync("git reset --hard @{upstream}", { cwd: piDir, stdio: "pipe" });
+            updateStatus = " \x1b[38;2;100;255;100m(Updated! Restart Pi to apply)\x1b[0m";
+            requestHeaderRender?.();
+            return {};
+          } catch (e: any) {
+            const msg = e.stderr?.toString().trim() || e.message || "Unknown error";
+            updateStatus = " \x1b[38;2;255;100;100m(Update failed)\x1b[0m";
+            requestHeaderRender?.();
+            return { result: `Update failed: ${msg}` };
+          }
         }
 
         // Fallback: ~/.pi was installed via install.sh/install.ps1 (clone-temp-copy)
-        // Use the same mechanism — clone to temp, sync, delete temp
-        return new Promise((resolve) => {
-          const tempDir = path.join(os.tmpdir(), "arete_update");
+        // Clone to temp, overwrite files, clean up
+        const tempDir = path.join(os.tmpdir(), "arete_update");
 
-          const cleanup = () => {
-            fs.rmSync(tempDir, { recursive: true, force: true });
-          };
+        // Preemptive cleanup — remove stale temp from failed runs
+        if (fs.existsSync(tempDir)) {
+          fs.rmSync(tempDir, { recursive: true, force: true });
+        }
 
+        try {
           // Step 1: Clone to temp
-          exec(
-            `git clone https://github.com/asterxsk/arete.git "${tempDir}" --quiet`,
-            { cwd: piDir },
-            (cloneErr, _cloneStdout, cloneStderr) => {
-              if (cloneErr) {
-                updateStatus = " \x1b[38;2;255;100;100m(Update failed — could not clone)\x1b[0m";
-                requestHeaderRender?.();
-                cleanup();
-                resolve({ result: `Update failed: could not clone repo — ${cloneStderr || cloneErr.message}` });
-                return;
-              }
+          execSync(`git clone https://github.com/asterxsk/arete.git "${tempDir}" --quiet`, {
+            cwd: piDir,
+            stdio: "pipe",
+          });
 
-              // Step 2: Sync files over
-              const isWin = process.platform === "win32";
-              const syncCmd = isWin
-                ? `robocopy "${tempDir}" "${piDir}" /E /NFL /NDL /NJH /NJS /NC /NS 2>&1`
-                : `rsync -a "${tempDir}/" "${piDir}/" 2>&1`;
+          // Step 2: Sync files over (cp -a is POSIX, always available on Linux/Mac;
+          // robocopy on Windows). These overwrite existing files in ~/.pi.
+          const isWin = process.platform === "win32";
+          if (isWin) {
+            execSync(`robocopy "${tempDir}" "${piDir}" /E /NFL /NDL /NJH /NJS /NC /NS 2>&1`, {
+              cwd: piDir,
+              stdio: "pipe",
+            });
+          } else {
+            execSync(`cp -a "${tempDir}/." "${piDir}/" 2>&1`, {
+              cwd: piDir,
+              stdio: "pipe",
+            });
+          }
 
-              exec(syncCmd, { cwd: piDir }, (syncErr, _syncStdout, syncStderr) => {
-                if (syncErr) {
-                  updateStatus = " \x1b[38;2;255;100;100m(Update failed — could not sync)\x1b[0m";
-                  requestHeaderRender?.();
-                  cleanup();
-                  resolve({ result: `Update failed: could not sync files — ${syncStderr || syncErr.message}` });
-                  return;
-                }
+          // Step 3: Cleanup temp
+          fs.rmSync(tempDir, { recursive: true, force: true });
 
-                // Step 3: Cleanup temp
-                cleanup();
-
-                // Step 4: Try restoring node_modules that got overwritten
-                // (rsync/robocopy from a fresh clone loses them)
-                const extDirs = [
-                  path.join(piDir, "agent", "extensions", "filechanges"),
-                  path.join(piDir, "agent", "extensions", "pi-hermes-memory"),
-                ];
-                for (const extDir of extDirs) {
-                  const pkgJson = path.join(extDir, "package.json");
-                  const nmDir = path.join(extDir, "node_modules");
-                  if (fs.existsSync(pkgJson) && !fs.existsSync(nmDir)) {
-                    exec("npm install --production", { cwd: extDir }, () => {});
-                  }
-                }
-
-                // Reload version from updated version.txt
-                const versionPath = path.join(piDir, "version.txt");
-                let newVersion = "";
-                try {
-                  if (fs.existsSync(versionPath)) {
-                    newVersion = fs.readFileSync(versionPath, "utf-8").trim();
-                  }
-                } catch (e) {}
-
-                updateStatus = ` \x1b[38;2;100;255;100m(Updated to v${newVersion || "?"}! Restart Pi to apply)\x1b[0m`;
-                requestHeaderRender?.();
-                resolve({});
-              });
+          // Step 4: Reinstall extension deps if node_modules got wiped
+          const extDirs = [
+            path.join(piDir, "agent", "extensions", "filechanges"),
+            path.join(piDir, "agent", "extensions", "pi-hermes-memory"),
+          ];
+          for (const extDir of extDirs) {
+            const pkgJson = path.join(extDir, "package.json");
+            const nmDir = path.join(extDir, "node_modules");
+            if (fs.existsSync(pkgJson) && !fs.existsSync(nmDir)) {
+              execSync("npm install --production", { cwd: extDir, stdio: "pipe" });
             }
-          );
-        });
+          }
+
+          // Reload version from updated version.txt
+          const versionPath = path.join(piDir, "version.txt");
+          let newVersion = "";
+          try {
+            if (fs.existsSync(versionPath)) {
+              newVersion = fs.readFileSync(versionPath, "utf-8").trim();
+            }
+          } catch (e) {}
+
+          updateStatus = ` \x1b[38;2;100;255;100m(Updated to v${newVersion || "?"}! Restart Pi to apply)\x1b[0m`;
+          requestHeaderRender?.();
+          return {};
+        } catch (e: any) {
+          // Cleanup on any error
+          if (fs.existsSync(tempDir)) {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+          }
+          const msg = e.stderr?.toString().trim() || e.message || "Unknown error";
+          updateStatus = " \x1b[38;2;255;100;100m(Update failed)\x1b[0m";
+          requestHeaderRender?.();
+          return { result: `Update failed: ${msg}` };
+        }
       }
     });
   }

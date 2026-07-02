@@ -290,10 +290,7 @@ export default function (pi: ExtensionAPI) {
 						const tokenStr = contextWindow > 0
 							? `${formatTokens(contextTokens)}/${formatTokens(contextWindow)}`
 							: `${formatTokens(contextTokens)}`;
-						const ctxColor = contextPercent > 90 ? C.red
-							: contextPercent > 70 ? C.gold
-								: contextPercent > 30 ? C.orange
-									: WHITE;
+						const ctxColor = contextPercent > 60 ? C.gold : WHITE;
 						line1Right += paint(WHITE, "※ ") + paint(ctxColor, tokenStr);
 						if (contextPercent > 90) {
 							line1Right += paint(C.red, " ●");
