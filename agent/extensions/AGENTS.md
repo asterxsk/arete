@@ -55,7 +55,7 @@ Each subfolder is a self-contained pi extension. Pi auto-loads any `extensions/<
 - `profile-switcher/` — `/profile` command — multi-account auth switching with OAuth and API key profiles
 - `questions/` — `questions` tool (multi-choice TUI with optional custom-answer fallback and ASCII sketches)
 - `spinner/` — Animated star spinner with theme-aware accent color, glow effect, and fun phrases
-- `statusline/` — Footer status line: L1 `provider × model $cost` / `↑input ↓output ※ tokens/window`, L2 `~/path` / `branch (worktree) filechanges`; auto-refreshes
+- `statusline/` — Footer status line: L1 `provider × model · N req` / `↑input ↓output · ※ tokens/window`, L2 `~/path` / `branch (worktree) filechanges`; auto-refreshes
 - `subagents/` — the `subagent` tool + `/sub` and `/jobs` commands: spawn isolated pi processes with predefined agent .md files. Runs in the BACKGROUND — returns a job id immediately and pings the agent with a follow-up message when the job finishes
 - `tasks/` — `/manage_task` command — background terminal task runner with output capture, wait, cancel; persists across sessions
 - `timers/` — `/schedule` command — one-shot and repeating timers with notifications, auto-delete on fire, and overlay browser

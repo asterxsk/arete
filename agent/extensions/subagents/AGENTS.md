@@ -15,7 +15,9 @@ Registers a `subagent` tool that spawns isolated child pi processes with predefi
 - Exports: `registerAgent()`, `unregisterAgent()` for other extensions
 - Agents defined via frontmatter: `name`, `description`, `tools` (comma-separated)
 - Uses `BUILTIN_TOOLS` set for tools pi provides natively
-- `CUSTOM_TOOL_EXTENSIONS` maps tool names to extension paths
+- `discoverAllExtensions()` scans `agent/extensions/` for every subfolder containing `index.ts` and passes them all to subagents via `--extension` flags. New extensions are auto-discovered — no explicit registration needed.
+- `SUBAGENT_TOOLS` maps subagent-specific tool names to extension paths (e.g., `safe_bash` from `tools/` directory)
+- The `subagents/` extension itself is excluded from auto-discovery to avoid recursion
 - Depends on `@earendil-works/pi-coding-agent` for `parseFrontmatter`, `truncateHead`, `ExtensionContext`, etc.
 
 ## Background Execution Model

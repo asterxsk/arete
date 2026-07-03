@@ -62,7 +62,7 @@ Re-registers built-in tools with compact visual rendering (single-line calls, ex
 
 ## File Structure
 - `index.ts` — Main entry: imports modules, wires event hooks, re-registers read/write/edit/bash/ls/grep/find tools
-- `rendering.ts` — Shared rendering primitives: `line`, `spacer`, `noOp`, `orange`, `compactCall`, `expandedBox`, `diffExpandedBox`, `wrapWithPrefix`, `formatDur`, `captureResult`
+- `rendering.ts` — Shared rendering primitives: `line`, `spacer`, `noOp`, `orange`, `compactCall`, `compactSummary`, `compactFailed`, `expandedBox`, `diffExpandedBox`, `wrapWithPrefix`, `wrapDiffLine`, `splitAnsiPrefix`, `colorizeDiffLine`, `captureResult`
 - `patch-tools.ts` — Tool patching: `patchTool` function, `KNOWN_TOOLS`, `TRUNCATED_TOOLS`, special-case handlers for questions/powershell/run_command/web_search/web_fetch/manage_task/schedule, generic fallback for all other tools
 - `assistant-footer.ts` — `initAssistantFooter`: appends "✻ Worked for Xs" to assistant messages
 - `prompt-ui.ts` — `initPromptUi`: patches UserMessageComponent with dark background and ❯ prefix

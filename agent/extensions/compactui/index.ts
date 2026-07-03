@@ -9,6 +9,7 @@
  *   - tool-status-dot.ts — animated status dot for running tools
  */
 
+import * as path from "path";
 import type { ExtensionAPI, EditToolDetails } from "@earendil-works/pi-coding-agent";
 import {
   AssistantMessageComponent,
@@ -24,17 +25,49 @@ import {
   createLsTool,
   createReadTool,
   createWriteTool,
+  getMarkdownTheme,
 } from "@earendil-works/pi-coding-agent";
-import { Markdown, Text, Container, Spacer, truncateToWidth } from "@earendil-works/pi-tui";
+import { Markdown, Text, Spacer, truncateToWidth } from "@earendil-works/pi-tui";
 
 import {
   line, noOp, orange, compactCall, compactSummary, compactFailed,
-  expandedBox, diffExpandedBox, captureResult, INDENT, DIM_GREY,
+  expandedBox, diffExpandedBox, captureResult, DIM_GREY, capitalizeToolName, INDENT, wrapDiffLine, colorizeDiffLine,
 } from "./rendering.js";
 import { patchTool, TRUNCATED_TOOLS, KNOWN_TOOLS, MAX_LINES } from "./patch-tools.js";
 import { initAssistantFooter } from "./assistant-footer.js";
 import { initPromptUi } from "./prompt-ui.js";
 import { initToolStatusDot } from "./tool-status-dot.js";
+
+// ── Module Constants ─────────────────────────────────────────────────
+const HIDDEN_TOOLS = new Set(["todo", "grep", "find", "ls"]);
+
+
+// ── Helper ────────────────────────────────────────────────────────────
+
+/**
+ * PrefixedMarkdown — renders markdown with a prefix on the first line
+ * and matching indentation on continuation lines for visual alignment.
+ */
+function prefixedMarkdown(prefix: string, text: string, x: number, theme: any): any {
+  return {
+    render(width: number): string[] {
+      const avail = width - x - prefix.length;
+      if (avail <= 0) return [" ".repeat(width)];
+      const md = new Markdown(text, 0, 0, theme);
+      const lines = md.render(avail);
+      if (!lines || lines.length === 0) return [""];
+      const result: string[] = [];
+      const basePad = " ".repeat(x);
+      const prefixPad = " ".repeat(prefix.length);
+      result.push(basePad + prefix + (lines[0] || ""));
+      for (let i = 1; i < lines.length; i++) {
+        result.push(basePad + prefixPad + (lines[i] || ""));
+      }
+      return result;
+    },
+    invalidate() {},
+  };
+}
 
 // ── State ──────────────────────────────────────────────────────────────
 
@@ -105,8 +138,7 @@ export default function (pi: ExtensionAPI) {
           // Hold skill invocation components to reorder them below user message
           let pendingSkillComponent: any = null;
           
-          // Tools to completely hide (no rendering, no spacing)
-          const HIDDEN_TOOLS = new Set(["todo", "grep", "find", "ls"]);
+
           
           chatContainer.addChild = function (...args: any[]) {
             const component = args[0];
@@ -232,9 +264,9 @@ export default function (pi: ExtensionAPI) {
             line = `\x1b[38;2;140;140;140m${line}\x1b[39m`;
             
             if (i === 0) {
-              result.push(` ⚝  ${line}`);
+              result.push(` ∴  ${line}`);
             } else {
-              result.push(` │  ${line}`);
+              result.push(`    ${line}`);
             }
           }
           return result;
@@ -252,6 +284,7 @@ export default function (pi: ExtensionAPI) {
           this.contentContainer.clear();
 
           let hasThinking = false;
+          let hasPrefix = false;
           for (let i = 0; i < message.content.length; i++) {
             const content = message.content[i];
             if (content.type === "text" && content.text.trim()) {
@@ -260,6 +293,11 @@ export default function (pi: ExtensionAPI) {
               }
               if (content.text) {
                 let text = content.text.trim();
+                // Add "● " prefix before first assistant text block on the same line
+                if (text && !hasPrefix) {
+                  hasPrefix = true;
+                  // We'll handle the prefix below when creating the markdown component
+                }
                 // Clean up garbage literal ANSI escapes and markdown-escaped ANSI from history
                 text = text.replace(/\\x1b\[[0-9;]*m/g, "");
                 text = text.replace(/\x1b\[[0-9;]*m/g, "");
@@ -278,9 +316,11 @@ export default function (pi: ExtensionAPI) {
                    text = text.replace(/✦ Worked for[^\n]*/g, "").trim();
                    
                    if (text) {
-                     this.contentContainer.addChild(
-                       new Markdown(text, 1, 0, this.markdownTheme)
-                     );
+                     if (hasPrefix) {
+                       this.contentContainer.addChild(prefixedMarkdown("\u25cf ", text, 1, this.markdownTheme));
+                     } else {
+                       this.contentContainer.addChild(new Markdown(text, 1, 0, this.markdownTheme));
+                     }
                    }
                    this.contentContainer.addChild(line(""));
                    this.contentContainer.addChild(
@@ -291,9 +331,11 @@ export default function (pi: ExtensionAPI) {
                    text = text.replace(/✻ Worked for[^\n]*/g, "").trim();
                    text = text.replace(/✦ Worked for[^\n]*/g, "").trim();
                    if (text) {
-                     this.contentContainer.addChild(
-                       new Markdown(text, 1, 0, this.markdownTheme)
-                     );
+                     if (hasPrefix) {
+                       this.contentContainer.addChild(prefixedMarkdown("\u25cf ", text, 1, this.markdownTheme));
+                     } else {
+                       this.contentContainer.addChild(new Markdown(text, 1, 0, this.markdownTheme));
+                     }
                    }
                 }
               }
@@ -348,8 +390,6 @@ export default function (pi: ExtensionAPI) {
         !ToolExecutionComponent.prototype.render.__compactui_patched
       ) {
         const originalRender = ToolExecutionComponent.prototype.render;
-        // Tools to completely hide from rendering
-        const HIDDEN_TOOLS = new Set(["todo", "grep", "find", "ls"]);
         ToolExecutionComponent.prototype.render = function (width: number) {
           // Completely hide certain tool calls
           if (this.toolName && HIDDEN_TOOLS.has(this.toolName)) {
@@ -375,7 +415,7 @@ export default function (pi: ExtensionAPI) {
                 } else {
                   const fullText = this.result.content?.[0]?.text || "";
                   const lineCount = fullText ? fullText.split("\n").length : 0;
-                  resultLines.push(...compactSummary(dummyTheme, `${this.toolName} output`, lineCount, "line").render(w));
+                  resultLines.push(...compactSummary(dummyTheme, `${this.toolName} output`, lineCount, "line", fullText).render(w));
                 }
               }
               
@@ -398,7 +438,7 @@ export default function (pi: ExtensionAPI) {
                 }
               } else {
                 // Still running - show running status with ⎿ prefix
-                const runningLines = [`${this.toolName} running...`];
+                const runningLines = [`${capitalizeToolName(this.toolName)} running...`];
                 resultLines.push(...expandedBox(dummyTheme, this.toolName, argsStr, runningLines, 40).render(w));
               }
               
@@ -486,8 +526,7 @@ export default function (pi: ExtensionAPI) {
 
 
       // ── Patch ToolExecutionComponent for path stripping ────────────────
-      // Strip /home/asterxsk/.pi/agent/ prefix from file paths for read/write/edit
-      const PATH_PREFIX = "/home/asterxsk/.pi/agent/";
+      const PATH_PREFIX = path.join(process.env.HOME || "~", ".pi", "agent") + "/";
       const PATH_TOOLS = new Set(["read", "write", "edit"]);
       
       function shortenPath(toolName: string, fullPath: string): string {
@@ -545,22 +584,17 @@ export default function (pi: ExtensionAPI) {
           const hint = DIM_GREY + " (ctrl+o to expand)" + "\x1b[39m";
           
           if (this.expanded) {
-            // Use expandedBox for proper wrapping with ⎿ prefix
-            // expandedBox renders its own header, so we don't add a separate Text child
-            const dummyTheme = {
-              fg: (color: string, text: string) => color === "dim" ? `${DIM_GREY}${text}\x1b[39m` : text
-            };
-            const summaryLines = this.message.summary.split("\n");
-            const box = expandedBox(dummyTheme, "compaction", "", summaryLines, 50);
-            this.addChild(box);
+            // Use Markdown for proper word wrap and formatting
+            const header = `**Compacted from ${tokenStr} tokens**\n\n`;
+            this.addChild(new Markdown(header + this.message.summary, 0, 0, getMarkdownTheme(), {
+              color: (text: string) => `${DIM_GREY}${text}\x1b[39m`,
+            }));
           } else {
-            // Collapsed view with horizontal lines
-            const line = "─".repeat(60);
-            const dimLine = DIM_GREY + line + "\x1b[39m";
-            const content = "  " + "\u273b Compacted from " + tokenStr + " tokens" + hint;
-            this.addChild(new Text(dimLine, 0, 0));
-            this.addChild(new Text(content, 0, 0));
-            this.addChild(new Text(dimLine, 0, 0));
+            // Collapsed view - centered
+            const message = "\u273b Compacted from " + tokenStr + " tokens" + hint;
+            const padding = Math.max(0, Math.floor((60 - message.length) / 2));
+            const centered = " ".repeat(padding) + message;
+            this.addChild(new Text(centered, 0, 0));
           }
         };
         
@@ -611,6 +645,34 @@ export default function (pi: ExtensionAPI) {
         details: { _fullOutput: formatted, _isUnknownTool: true },
         isError: true,
       };
+    }
+
+    // Detect JSON leaks and tool issues
+    if (!event.isError) {
+      const fullText = content
+        .map((p: any) => (p.type === "text" ? p.text : ""))
+        .join("\n");
+      
+      // Check for JSON leak patterns
+      const isJsonLeak = 
+        fullText.startsWith("{\"") ||
+        fullText.startsWith("[{\"") ||
+        fullText.match(/^{\s*"error"\s*:/i) ||
+        fullText.match(/^{\s*"message"\s*:\s*"/i) ||
+        fullText.includes("\"error\":\s*\"") ||
+        fullText.includes("traceback") ||
+        fullText.includes("Traceback (most recent call last)") ||
+        fullText.includes("SyntaxError:") ||
+        fullText.includes("JSONDecodeError:");
+      
+      if (isJsonLeak && fullText.length > 0) {
+        const formatted = `Tool "${event.toolName}" returned malformed output`;
+        return {
+          content: [{ type: "text", text: formatted }],
+          details: { _fullOutput: formatted, _isJsonLeak: true },
+          isError: true,
+        };
+      }
     }
 
     if (!TRUNCATED_TOOLS.has(event.toolName)) return;
@@ -664,7 +726,7 @@ export default function (pi: ExtensionAPI) {
 
       if (!expanded) {
         if (result.isError) return compactFailed(theme);
-        return compactSummary(theme, "read tool output", lineCount, "line");
+        return compactSummary(theme, "Read", lineCount, "line");
       }
 
       const filePath = context.args.path ?? "?";
@@ -678,7 +740,7 @@ export default function (pi: ExtensionAPI) {
         return `${DIM_GREY}${num}\x1b[39m  ${line}`;
       });
 
-      return expandedBox(theme, "read", label, numberedLines, 40);
+      return expandedBox(theme, "read", label, numberedLines, 40, "lines in file");
     },
   });
 
@@ -710,7 +772,7 @@ export default function (pi: ExtensionAPI) {
 
       if (!expanded) {
         if (result.isError) return compactFailed(theme);
-        return compactSummary(theme, "file written", lineCount, "line");
+        return compactSummary(theme, "Written", lineCount, "line", full);
       }
 
       const filePath = context.args.path ?? "?";
@@ -760,11 +822,11 @@ export default function (pi: ExtensionAPI) {
     },
     renderResult(result, { expanded }, theme, context) {
       const details = result.details as EditToolDetails | undefined;
-      if (!details?.diff) return noOp();
-      const diffLines = details.diff.split("\n");
+      const diffLines = details?.diff?.split("\n");
 
       if (!expanded) {
         if (result.isError) return compactFailed(theme);
+        if (!diffLines || diffLines.length === 0) return noOp();
         // Count added/removed lines from diff (exclude hunk headers +++/---)
         let added = 0;
         let removed = 0;
@@ -777,8 +839,39 @@ export default function (pi: ExtensionAPI) {
         if (added > 0 && removed > 0) summary += ", ";
         if (removed > 0) summary += `removed ${removed} line${removed !== 1 ? "s" : ""}`;
         if (!summary) summary = "no changes";
-        return line(INDENT + DIM_GREY + "\u23bf " + summary + "\x1b[39m");
+        
+        // Show first 8 lines of diff with proper coloring
+        const PREVIEW_LINES = 8;
+        const previewLines = diffLines.slice(0, PREVIEW_LINES);
+        const remaining = diffLines.length > PREVIEW_LINES ? diffLines.length - PREVIEW_LINES : 0;
+        
+        // Create colored diff lines using existing colorizeDiffLine
+        const coloredDiffLines: string[] = previewLines.map(dl => colorizeDiffLine(theme, dl));
+        
+        // Build preview component with wrapping
+        const previewComponent: Component = {
+          render(width: number) {
+            const result: string[] = [];
+            // Summary line
+            result.push(INDENT + DIM_GREY + "\u23bf " + summary + "\x1b[39m");
+            // Diff lines with wrapping
+            for (const coloredLine of coloredDiffLines) {
+              const wrapped = wrapDiffLine(INDENT + "   " + coloredLine, width);
+              result.push(...wrapped);
+            }
+            // Truncation message
+            if (remaining > 0) {
+              result.push(INDENT + "  " + DIM_GREY + "... " + remaining + " more lines (ctrl+o to expand)\x1b[39m");
+            }
+            return result;
+          },
+          invalidate() {},
+        };
+        
+        return previewComponent;
       }
+
+      if (!diffLines || diffLines.length === 0) return noOp();
 
       return diffExpandedBox(
         theme,
@@ -817,7 +910,7 @@ export default function (pi: ExtensionAPI) {
 
       if (!expanded) {
         if (result.isError) return compactFailed(theme);
-        return compactSummary(theme, "read terminal output", lines.length, "line");
+        return compactSummary(theme, "Output", lines.length, "line", full);
       }
 
       const cmd =
@@ -853,7 +946,7 @@ export default function (pi: ExtensionAPI) {
 
       if (!expanded) {
         if (result.isError) return compactFailed(theme);
-        return compactSummary(theme, "read terminal output", lines.length, "line");
+        return compactSummary(theme, "Listed", lines.length, "entry", full);
       }
 
       return expandedBox(theme, "ls", context.args.path || ".", lines, 40);
@@ -887,7 +980,7 @@ export default function (pi: ExtensionAPI) {
 
       if (!expanded) {
         if (result.isError) return compactFailed(theme);
-        return compactSummary(theme, "read terminal output", lines.length, "line");
+        return compactSummary(theme, "Found", lines.length, "match", full);
       }
 
       return expandedBox(theme, "grep", context.args.pattern ?? "?", lines, 40);
@@ -925,7 +1018,7 @@ export default function (pi: ExtensionAPI) {
 
       if (!expanded) {
         if (result.isError) return compactFailed(theme);
-        return compactSummary(theme, "read terminal output", lines.length, "line");
+        return compactSummary(theme, "Found", lines.length, "file", full);
       }
 
       return expandedBox(

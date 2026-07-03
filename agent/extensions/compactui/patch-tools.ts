@@ -7,10 +7,11 @@
  * run_command, web_search, web_fetch, manage_task, and schedule.
  */
 
+import * as path from "path";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import {
   line, noOp, orange, compactCall, compactSummary, compactFailed,
-  expandedBox, INDENT, HINT, DIM_GREY,
+  expandedBox, DIM_GREY, capitalizeToolName,
 } from "./rendering.js";
 
 // ── Constants ──────────────────────────────────────────────────────────
@@ -54,8 +55,7 @@ export function patchTool(tool: any): void {
   if (tool.renderShell === "self" && tool.renderResult && !tool.__compactui_patched) return;
 
   // ── Path Stripping Helper ─────────────────────────────────────────────
-  // Strip /home/asterxsk/.pi/agent/ prefix from file paths
-  const PATH_PREFIX = "/home/asterxsk/.pi/agent/";
+  const PATH_PREFIX = path.join(process.env.HOME || "~", ".pi", "agent") + "/";
   function stripPath(path: string): string {
     if (path && path.startsWith(PATH_PREFIX)) {
       return path.slice(PATH_PREFIX.length);
@@ -71,7 +71,7 @@ export function patchTool(tool: any): void {
     tool.renderCall = (args: any, theme: any, context: any) => {
       if (context.expanded) return noOp();
       const filePath = args.path || args.file || "?";
-      return line(INDENT + orange(theme, tool.name) + " [" + stripPath(filePath) + "]" + DIM_GREY + HINT + "\x1b[39m");
+      return line(orange(theme, capitalizeToolName(tool.name)) + "(" + stripPath(filePath) + ")");
     };
     tool.renderResult = (result: any, opts: any, theme: any, context: any) => {
       if (result.isError) return compactFailed(theme);
@@ -94,7 +94,7 @@ export function patchTool(tool: any): void {
       if (context.expanded) return noOp();
       let count = 1;
       if (args && Array.isArray(args.questions)) count = args.questions.length;
-      return line(INDENT + orange(theme, tool.name) + " [" + `asking ${count} question${count === 1 ? '' : 's'}` + "]" + DIM_GREY + " (ctrl+o to expand)\x1b[39m");
+      return line(orange(theme, capitalizeToolName(tool.name)) + "(asking " + count + ` question${count === 1 ? '' : 's'}` + ")");
     };
     tool.renderResult = (result: any, opts: any, theme: any, context: any) => {
       if (result.isError) return compactFailed(theme);
@@ -106,14 +106,14 @@ export function patchTool(tool: any): void {
       
       if (!opts.expanded) {
         if (cancelled) {
-          return line(INDENT + DIM_GREY + `\u23bf cancelled` + "\x1b[39m");
+          return line(DIM_GREY + `\u23bf cancelled` + "\x1b[39m");
         }
         const count = answers.length;
-        return line(INDENT + DIM_GREY + `\u23bf answered ${count} question${count === 1 ? '' : 's'}` + "\x1b[39m");
+        return line(DIM_GREY + `\u23bf answered ${count} question${count === 1 ? '' : 's'}` + "\x1b[39m");
       } else {
         const res: string[] = [];
         const bullet = '\u25cf ';
-        res.push(INDENT + "  " + bullet + 'User answered ' + tool.name + ':');
+        res.push("  " + bullet + 'User answered ' + capitalizeToolName(tool.name) + ':');
         
         // Build question-answer pairs
         for (let i = 0; i < questions.length; i++) {
@@ -130,9 +130,9 @@ export function patchTool(tool: any): void {
               answerText = String(answer.optionIndex + 1);
             }
           }
-          const prefix = i === 0 ? "\u23bf  " : "   "; // ⎿ with 2 spaces to align with 3-space indent
+          const prefix = i === 0 ? "\u23bf " : "   "; // ⎿ (2 cols) + 1 space, subsequent 3 spaces
           const lineText = `${questionText} \u2192 ${answerText}`;
-          res.push(INDENT + "  " + DIM_GREY + prefix + "\x1b[39m" + "\u00b7 " + lineText);
+          res.push("  " + DIM_GREY + prefix + "\x1b[39m" + "\u00b7 " + lineText);
         }
         
         return new CustomBlock(res) as any;
@@ -156,7 +156,7 @@ export function patchTool(tool: any): void {
       const lines = full.split("\n");
       if (!opts.expanded) {
         if (result.isError) return compactFailed(theme);
-        return compactSummary(theme, "read terminal output", lines.length, "line");
+        return compactSummary(theme, "Output", lines.length, "line", full);
       }
 
       return expandedBox(theme, "powershell", context.args.command ?? "", lines, 40);
@@ -179,7 +179,7 @@ export function patchTool(tool: any): void {
       const lines = full.split("\n");
       if (!opts.expanded) {
         if (result.isError) return compactFailed(theme);
-        return compactSummary(theme, "read terminal output", lines.length, "line");
+        return compactSummary(theme, "Output", lines.length, "line", full);
       }
       return expandedBox(theme, "run_command", context.args.CommandLine ?? "", lines, 40);
     };
@@ -201,7 +201,7 @@ export function patchTool(tool: any): void {
       const lines = full.split("\n");
       if (!opts.expanded) {
         if (result.isError) return compactFailed(theme);
-        return compactSummary(theme, "read search results", lines.length, "line");
+        return compactSummary(theme, "Found", lines.length, "result", full);
       }
       return expandedBox(theme, "web_search", context.args.query ?? "", lines, 40);
     };
@@ -223,7 +223,7 @@ export function patchTool(tool: any): void {
       const lines = full.split("\n");
       if (!opts.expanded) {
         if (result.isError) return compactFailed(theme);
-        return compactSummary(theme, "read web page", lines.length, "line");
+        return compactSummary(theme, "Fetched", lines.length, "line", full);
       }
       return expandedBox(theme, tool.name, context.args.url ?? "", lines, 40);
     };
@@ -245,7 +245,7 @@ export function patchTool(tool: any): void {
       if (!opts.expanded) {
         if (result.isError) return compactFailed(theme);
         const taskCount = full.includes("TaskId") || full.includes("task") ? 1 : 0;
-        return compactSummary(theme, "checked tasks", taskCount, "task");
+        return compactSummary(theme, "Checked", taskCount, "task", full);
       }
       const lines = full.split("\n");
       return expandedBox(theme, "manage_task", `${context.args.Action} ${context.args.TaskId || ""}`.trim(), lines, 40);
@@ -271,7 +271,7 @@ export function patchTool(tool: any): void {
       if (!opts.expanded) {
         if (result.isError) return compactFailed(theme);
         const taskCount = full.includes("timerId") || full.includes("cronId") || full.includes("scheduled") ? 1 : 0;
-        return compactSummary(theme, "scheduled tasks", taskCount, "task");
+        return compactSummary(theme, "Scheduled", taskCount, "task", full);
       }
       const lines = full.split("\n");
       let argsLine = "";
@@ -296,15 +296,37 @@ export function patchTool(tool: any): void {
   tool.renderResult = (result: any, opts: any, theme: any, context: any) => {
     if ((result.details as any)?._isUnknownTool) {
       const toolName = tool.name || (context.args as any)?.name || "unknown";
-      return line(INDENT + orange(theme, toolName) + " " + theme.fg("error", "tool not found"));
+      return line(orange(theme, capitalizeToolName(toolName)) + " " + theme.fg("error", "tool not found"));
     }
-
-    if (!opts.expanded) return noOp();
 
     const argsLine = Object.values(context.args || {}).map(v => typeof v === 'object' ? JSON.stringify(v) : String(v)).join(" ");
     const content = result.content?.[0];
     const text = content?.type === "text" ? content.text : "";
     const lines = text.split("\n").filter((l: string) => l.trim());
+
+    if (!opts.expanded) {
+      if (result.isError) return compactFailed(theme);
+      
+      // Detect memory operations and show appropriate summary
+      let summary = "output";
+      let unit = "line";
+      if (tool.name === "memory") {
+        const action = (context.args as any)?.action || "";
+        const target = (context.args as any)?.target || "";
+        if (action === "add") {
+          summary = "Added";
+          unit = target === "memory" ? "memory" : "entry";
+        } else if (action === "replace") {
+          summary = "Edited";
+          unit = target === "memory" ? "memory" : "entry";
+        } else if (action === "remove") {
+          summary = "Removed";
+          unit = target === "memory" ? "memory" : "entry";
+        }
+      }
+      
+      return compactSummary(theme, summary, lines.length, unit, text);
+    }
 
     return expandedBox(theme, tool.name, argsLine, lines, 40);
   };

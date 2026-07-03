@@ -2,7 +2,7 @@
 
 ## Purpose
 Renders a status footer in the TUI showing:
-  Line 1: `provider × model $cost` (left) / `↑input ↓output ※ tokens/window` (right)
+  Line 1: `provider × model · N req` (left) / `↑input ↓output · ※ tokens/window` (right)
   Line 2: `~/path` (left) / `branch (worktree) filechanges` (right)
 Also provides an Alt+C shortcut to compact context when usage exceeds 90%.
 
@@ -23,7 +23,7 @@ Also provides an Alt+C shortcut to compact context when usage exceeds 90%.
 - Detects git branch and worktree by walking up from cwd, reading `.git` HEAD/gitdir files
 
 ## Work Guidance
-- Line 1 layout: price moves to right of model name; token I/O moved before context
+- Line 1 layout: request count shown to right of model name; token I/O moved before context
 - Token colors: `C.blue` for input (↑), `C.purple` for output (↓)
 - Context percentage determines color: safe (<30%) white, warm (30-70%) orange, hot (70-90%) gold, critical (>90%) red with ● indicator
 - No gradient bar — just `※ tokens/window` text display
@@ -33,7 +33,7 @@ Also provides an Alt+C shortcut to compact context when usage exceeds 90%.
 
 ## Verification
 - Run `demo()` function (uncomment at bottom) to test helper functions
-- Visual check: footer shows in TUI with provider/model/cost/price/tokens/context
+- Visual check: footer shows in TUI with provider/model/requests/tokens/context
 - Visual check: git branch + worktree shown on line 2 before file changes
 - Test Alt+C: context must be above 90% to trigger compact
 

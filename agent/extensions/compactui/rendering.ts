@@ -47,17 +47,60 @@ export function orange(theme: any, text: string): string {
   return `\x1b[38;2;250;179;135m${text}\x1b[39m`;
 }
 
+/** Convert tool_name to Title Case: run_command → Run Command */
+export function capitalizeToolName(toolName: string): string {
+  // Special case: edit → Update
+  if (toolName === 'edit') return 'Update';
+  return toolName
+    .split('_')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
+}
+
 export function compactCall(toolName: string, argsStr: string, theme: any): Component {
   let display = argsStr.split("\n")[0] ?? argsStr;
   const maxDisplay = 40;
   if (display.length > maxDisplay) display = display.slice(0, maxDisplay - 3) + "...";
   else if (display.length < argsStr.length) display += "...";
-  return line(INDENT + orange(theme, toolName) + " [" + display + "]" + DIM_GREY + HINT + "\x1b[39m");
+  const capitalizedName = capitalizeToolName(toolName);
+  return line(INDENT + orange(theme, capitalizedName) + "(" + display + ")");
 }
 
-export function compactSummary(theme: any, summary: string, count: number, unit: string): Component {
-  const countStr = count > 0 ? ` (${count} ${unit}${count !== 1 ? "s" : ""})` : "";
-  return line(INDENT + DIM_GREY + "\u23bf " + summary + countStr + "\x1b[39m");
+export function compactSummary(theme: any, summary: string, count: number, unit: string, fullOutput?: string): Component {
+  const PREVIEW_LINES = 5;
+  const lines = fullOutput ? fullOutput.split("\n").filter(l => l.trim()) : [];
+  const showPreview = lines.length > 0;
+  const previewLines = lines.slice(0, PREVIEW_LINES);
+  const remaining = count > PREVIEW_LINES ? count - PREVIEW_LINES : 0;
+  
+  const components: Component[] = [];
+  
+  if (showPreview) {
+    // Show first 5 lines of output
+    for (let i = 0; i < previewLines.length; i++) {
+      const prefix = i === 0 ? INDENT + DIM_GREY + "\u23bf  " : INDENT + "   ";
+      const lineText = previewLines[i];
+      // Truncate long lines — use visibleWidth to skip ANSI escape bytes
+      const maxLen = 80;
+      const truncated = visibleWidth(lineText) > maxLen ? lineText.slice(0, maxLen - 3) + "..." : lineText;
+      components.push(line(prefix + "\x1b[97m" + truncated + "\x1b[39m"));
+    }
+    // Show truncation message
+    if (remaining > 0) {
+      components.push(line(INDENT + "  " + DIM_GREY + "... " + remaining + " more lines (ctrl+o to expand)\x1b[39m"));
+    }
+  } else {
+    // Fallback to summary
+    const countStr = count > 0 ? `${count} ${unit}${count !== 1 ? "s" : ""}` : "no output";
+    components.push(line(INDENT + DIM_GREY + "\u23bf " + countStr + " of output\x1b[39m"));
+  }
+  
+  return {
+    render(width: number) {
+      return components.flatMap(c => c.render(width));
+    },
+    invalidate() {},
+  };
 }
 
 export function compactFailed(theme: any): Component {
@@ -66,16 +109,14 @@ export function compactFailed(theme: any): Component {
 
 
 
-// ── Wrap with Prefix (for expanded box lines) ──────────────────────────
+// ── ANSI prefix/content splitting (shared by wrapWithPrefix & wrapDiffLine) ──
 
-export function wrapWithPrefix(rl: string, width: number): string[] {
-  const visible = rl.replace(/\x1b\[[0-9;]*m/g, "");
-  // Match prefix: leading spaces + ⎿ (U+23BF) or │ or └ + trailing spaces
-  // This handles formats like " ⎿ " or " │ " or "└ " or just "│ "
-  const match = visible.match(/^(\s*[\u23BF\u2502\u2514]\s*)/);
-  if (!match || match[1].length === 0) return wrapTextWithAnsi(rl, width);
-
-  const prefixLen = match[1].length;
+/**
+ * Walk a raw ANSI string, splitting into the ANSI-prefixed portion up to
+ * `prefixLen` visible characters, and the remaining content string.
+ * Returns [ansiPrefix, contentStr].
+ */
+function splitAnsiPrefix(rl: string, prefixLen: number): [string, string] {
   let ansiPrefix = "";
   let contentStr = "";
   let visibleCount = 0;
@@ -95,48 +136,72 @@ export function wrapWithPrefix(rl: string, width: number): string[] {
     visibleCount++;
     i++;
   }
+  return [ansiPrefix, contentStr];
+}
 
-  // 2-char right margin
+// ── Wrap with Prefix (for expanded box lines) ──────────────────────────
+
+export function wrapWithPrefix(rl: string, width: number): string[] {
+  const visible = rl.replace(/\x1b\[[0-9;]*m/g, "");
+  // Match prefix: leading spaces + ⎿ (U+23BF) or │ or └ + trailing spaces
+  // This handles formats like " ⎿ " or " │ " or "└ " or just "│ "
+  const match = visible.match(/^(\s*[\u23BF\u2502\u2514]\s*)/);
+  if (!match || match[1].length === 0) return wrapTextWithAnsi(rl, width);
+
+  const prefixLen = match[1].length;
+  const [ansiPrefix, contentStr] = splitAnsiPrefix(rl, prefixLen);
+
+  // Check if content starts with line number (e.g., "   59  content")
+  // If so, continuation lines should not repeat the line number
+  const lineNumMatch = contentStr.match(/^(\s*\d+\s{2})/);
+  const lineNumLen = lineNumMatch ? lineNumMatch[1].length : 0;
+  const contentWithoutLineNum = lineNumMatch ? contentStr.slice(lineNumLen) : contentStr;
+  
+  // Content width with 2-char right margin
   const contentWidth = Math.max(10, width - prefixLen - 2);
-  const wrappedContent = wrapTextWithAnsi(contentStr, contentWidth);
+  const wrappedContent = wrapTextWithAnsi(contentWithoutLineNum, contentWidth);
   if (wrappedContent.length === 0) return [ansiPrefix];
 
-  const result = [ansiPrefix + wrappedContent[0]];
-  // Subsequent lines use spaces instead of ⎿/│/└ prefix
-  // Replace the box-drawing character with spaces to match expandedBox format
+  const result = [ansiPrefix + (lineNumMatch ? lineNumMatch[1] : "") + wrappedContent[0]];
+  // Subsequent lines: replace box-drawing char with space, keep trailing spaces
+  // Do NOT include line number on continuation lines
   const subsequentPrefix = match[1].replace(/[\u23BF\u2502\u2514]/g, " ");
   for (let j = 1; j < wrappedContent.length; j++) {
-    result.push(subsequentPrefix + wrappedContent[j]);
+    result.push(subsequentPrefix + " ".repeat(lineNumLen) + wrappedContent[j]);
   }
   return result;
 }
 
 // ── Expanded Box ───────────────────────────────────────────────────────
 
-export function expandedBox(theme: any, headerName: string, argsLine: string, lines: string[], limit: number): Component {
+export function expandedBox(theme: any, headerName: string, argsLine: string, lines: string[], limit: number, moreSuffix = ""): Component {
   const show = lines.slice(0, limit);
   const hasMore = lines.length > limit;
   const raw: string[] = [];
+  let moreLine = "";
+  const capitalizedName = capitalizeToolName(headerName);
 
   // Output lines: ⎿ on first line, spaces on following lines
   // No padding - header is also at position 0
   for (let i = 0; i < show.length; i++) {
-    // ⎿ is 1 char, space + ⎿ + 2 spaces = 4 chars total, same as 3 spaces on subsequent lines
-    const prefix = i === 0 ? " \u23bf  " : "   "; // space + ⎿ + 2 spaces, subsequent lines 3 spaces
+    // ⎿ is 1 char, ⎿ + 2 spaces = 3 chars total, same as 3 spaces on subsequent lines
+    const prefix = i === 0 ? "\u23bf  " : "   "; // ⎿ + 2 spaces, subsequent lines 3 spaces
     raw.push(prefix + theme.fg("text", show[i]));
   }
 
   if (hasMore) {
-    raw.push("  " + DIM_GREY + "... " + (lines.length - limit) + " more\x1b[39m");
+    const moreText = moreSuffix ? " more " + moreSuffix : " more";
+    moreLine = DIM_GREY + "... " + (lines.length - limit) + moreText + "\x1b[39m";
   }
 
   // Store plain text version for copy/paste
-  const plainTextLines = [headerName + " [" + argsLine + "]"];
+  const plainTextLines = [capitalizedName + "(" + argsLine + ")"];
   for (const line of show) {
     plainTextLines.push(line);
   }
   if (hasMore) {
-    plainTextLines.push("... " + (lines.length - limit) + " more");
+    const moreTextPt = moreSuffix ? " more " + moreSuffix : " more";
+    plainTextLines.push("... " + (lines.length - limit) + moreTextPt);
   }
 
   class GenericComponent {
@@ -153,25 +218,28 @@ export function expandedBox(theme: any, headerName: string, argsLine: string, li
 
   return new GenericComponent((width: number) => {
       const result: string[] = [];
-      const headerPrefix = INDENT + orange(theme, headerName) + " [";
-      const headerPrefixWidth = INDENT.length + headerName.length + 2;
+      const headerPrefix = orange(theme, capitalizedName) + "(";
+      // NOTE: headerPrefixWidth must track *visible* width (plain text characters),
+      // not the ANSI-escaped string length, since it is used to compute
+      // available wrapping width via subtraction from the terminal width.
+      const headerPrefixWidth = capitalizedName.length + 1;
       const argsWidth = Math.max(10, width - headerPrefixWidth - 1);
 
       const cleanArgsLine = argsLine.replace(/\r/g, "").replace(/^\n+/, "");
       const wrappedArgs = wrapTextWithAnsi(cleanArgsLine, argsWidth);
       if (cleanArgsLine.length === 0) {
-        // No args - just show header without brackets or INDENT
-        result.push(truncateToWidth(orange(theme, headerName), width));
+        // No args - just show header without brackets
+        result.push(truncateToWidth(orange(theme, capitalizedName), width));
       } else if (wrappedArgs.length === 0) {
-        result.push(truncateToWidth(headerPrefix + "]", width));
+        result.push(truncateToWidth(headerPrefix + ")", width));
       } else {
         for (let i = 0; i < wrappedArgs.length; i++) {
           if (i === 0) {
-            const suffix = wrappedArgs.length === 1 ? "]" : "";
+            const suffix = wrappedArgs.length === 1 ? ")" : "";
             result.push(truncateToWidth(headerPrefix + wrappedArgs[i] + suffix, width));
           } else {
             const prefix = " ".repeat(headerPrefixWidth);
-            const suffix = i === wrappedArgs.length - 1 ? "]" : "";
+            const suffix = i === wrappedArgs.length - 1 ? ")" : "";
             result.push(truncateToWidth(prefix + wrappedArgs[i] + suffix, width));
           }
         }
@@ -181,6 +249,11 @@ export function expandedBox(theme: any, headerName: string, argsLine: string, li
         if (!rl) result.push("");
         else if (visibleWidth(rl) <= width) result.push(rl);
         else result.push(...wrapWithPrefix(rl, width));
+      }
+      // Append more line separately — never with ⎿ prefix
+      if (moreLine) {
+        if (visibleWidth(moreLine) <= width) result.push(moreLine);
+        else result.push(...wrapTextWithAnsi(moreLine, width));
       }
       return result;
   }, plainTextLines.join("\n"));
@@ -209,30 +282,75 @@ export function colorizeDiffLine(theme: any, line: string): string {
   return theme.fg("text", line);
 }
 
-export function diffExpandedBox(theme: any, headerName: string, argsLine: string, lines: string[], limit: number): Component {
+/**
+ * Wrap a diff line with proper indentation for continuation lines.
+ * For + lines: prefix is "   NNN +", continuation is "         +"
+ * For - lines: prefix is "   NNN -", continuation is "         -"
+ * For context lines: prefix is "   NNN  ", continuation is "         "
+ */
+export function wrapDiffLine(rl: string, width: number): string[] {
+  const visible = rl.replace(/\x1b\[[0-9;]*m/g, "");
+  
+  // Match diff prefix: spaces + line number + space + sign
+  // e.g., "   59 +" or "   59 -" or "   59  "
+  const match = visible.match(/^(\s*\d+\s*)([+\- ])/);
+  if (!match || match[1].length === 0) return wrapTextWithAnsi(rl, width);
+
+  const numAndSpaces = match[1]; // e.g., "   59 " or "   59 "
+  const sign = match[2]; // "+", "-", or " "
+  const prefixLen = numAndSpaces.length + 1; // +1 for the sign
+  
+  const [ansiPrefix, contentStr] = splitAnsiPrefix(rl, prefixLen);
+
+  // Content width with 2-char right margin
+  const contentWidth = Math.max(10, width - prefixLen - 2);
+  const wrappedContent = wrapTextWithAnsi(contentStr, contentWidth);
+  if (wrappedContent.length === 0) return [ansiPrefix];
+
+  const result = [ansiPrefix + wrappedContent[0]];
+  
+  // Subsequent lines: no line number, just spaces + colored sign
+  const signColor = sign === '+' 
+    ? "\x1b[38;2;120;220;120m" 
+    : sign === '-' 
+      ? "\x1b[38;2;220;120;120m" 
+      : "";
+  const subsequentPrefix = " ".repeat(numAndSpaces.length) + (signColor ? signColor + sign + "\x1b[39m" : "   ");
+  
+  for (let j = 1; j < wrappedContent.length; j++) {
+    result.push(subsequentPrefix + wrappedContent[j]);
+  }
+  return result;
+}
+
+export function diffExpandedBox(theme: any, headerName: string, argsLine: string, lines: string[], limit: number, moreSuffix = ""): Component {
   const show = lines.slice(0, limit);
   const hasMore = lines.length > limit;
   const raw: string[] = [];
+  let moreLine = "";
+  const capitalizedName = capitalizeToolName(headerName);
 
   // Diff lines: ⎿ on first line, spaces on following lines, colored by +/-
   // No padding - header is also at position 0
   for (let i = 0; i < show.length; i++) {
-    // ⎿ is 1 char, space + ⎿ + 2 spaces = 4 chars total, same as 3 spaces on subsequent lines
-    const prefix = i === 0 ? " \u23bf  " : "   "; // space + ⎿ + 2 spaces, subsequent lines 3 spaces
+    // ⎿ is 1 char, ⎿ + 2 spaces = 3 chars total, same as 3 spaces on subsequent lines
+    const prefix = i === 0 ? "\u23bf  " : "   "; // ⎿ + 2 spaces, subsequent lines 3 spaces
     raw.push(prefix + colorizeDiffLine(theme, show[i]));
   }
 
   if (hasMore) {
-    raw.push("  " + DIM_GREY + "... " + (lines.length - limit) + " more\x1b[39m");
+    const moreText = moreSuffix ? " more " + moreSuffix : " more";
+    moreLine = DIM_GREY + "... " + (lines.length - limit) + moreText + "\x1b[39m";
   }
 
   // Store plain text version for copy/paste
-  const plainTextLines = [headerName + " [" + argsLine + "]"];
+  const plainTextLines = [capitalizedName + "(" + argsLine + ")"];
   for (const line of show) {
     plainTextLines.push(line);
   }
   if (hasMore) {
-    plainTextLines.push("... " + (lines.length - limit) + " more");
+    const moreTextPt = moreSuffix ? " more " + moreSuffix : " more";
+    plainTextLines.push("... " + (lines.length - limit) + moreTextPt);
   }
 
   class GenericComponent {
@@ -249,25 +367,28 @@ export function diffExpandedBox(theme: any, headerName: string, argsLine: string
 
   return new GenericComponent((width: number) => {
       const result: string[] = [];
-      const headerPrefix = INDENT + orange(theme, headerName) + " [";
-      const headerPrefixWidth = INDENT.length + headerName.length + 2;
+      const headerPrefix = orange(theme, capitalizedName) + "(";
+      // NOTE: headerPrefixWidth must track *visible* width (plain text characters),
+      // not the ANSI-escaped string length, since it is used to compute
+      // available wrapping width via subtraction from the terminal width.
+      const headerPrefixWidth = capitalizedName.length + 1;
       const argsWidth = Math.max(10, width - headerPrefixWidth - 1);
 
       const cleanArgsLine = argsLine.replace(/\r/g, "").replace(/^\n+/, "");
       const wrappedArgs = wrapTextWithAnsi(cleanArgsLine, argsWidth);
       if (cleanArgsLine.length === 0) {
-        // No args - just show header without brackets or INDENT
-        result.push(truncateToWidth(orange(theme, headerName), width));
+        // No args - just show header without brackets
+        result.push(truncateToWidth(orange(theme, capitalizedName), width));
       } else if (wrappedArgs.length === 0) {
-        result.push(truncateToWidth(headerPrefix + "]", width));
+        result.push(truncateToWidth(headerPrefix + ")", width));
       } else {
         for (let i = 0; i < wrappedArgs.length; i++) {
           if (i === 0) {
-            const suffix = wrappedArgs.length === 1 ? "]" : "";
+            const suffix = wrappedArgs.length === 1 ? ")" : "";
             result.push(truncateToWidth(headerPrefix + wrappedArgs[i] + suffix, width));
           } else {
             const prefix = " ".repeat(headerPrefixWidth);
-            const suffix = i === wrappedArgs.length - 1 ? "]" : "";
+            const suffix = i === wrappedArgs.length - 1 ? ")" : "";
             result.push(truncateToWidth(prefix + wrappedArgs[i] + suffix, width));
           }
         }
@@ -275,7 +396,12 @@ export function diffExpandedBox(theme: any, headerName: string, argsLine: string
       for (const rl of raw) {
         if (!rl) result.push("");
         else if (visibleWidth(rl) <= width) result.push(rl);
-        else result.push(...wrapWithPrefix(rl, width));
+        else result.push(...wrapDiffLine(rl, width));
+      }
+      // Append more line separately — never with ⎿ prefix
+      if (moreLine) {
+        if (visibleWidth(moreLine) <= width) result.push(moreLine);
+        else result.push(...wrapTextWithAnsi(moreLine, width));
       }
       return result;
   }, plainTextLines.join("\n"));

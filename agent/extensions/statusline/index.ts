@@ -2,7 +2,7 @@
  * toolkit/statusline — status line footer with provider, model, context usage, and file changes.
  *
  * Renders a footer:
- *   Line 1: <provider> × <model $cost>           <↑input ↓output ※ tokens/window>
+ *   Line 1: <provider> × <model · N req>           <↑input ↓output · ※ tokens/window>
  *   Line 2: <~/path>                             <branch (worktree) filechanges>
  */
 
@@ -149,43 +149,13 @@ export default function (pi: ExtensionAPI) {
 	let cwd = "";
 	let inputTokens = 0;
 	let outputTokens = 0;
-	let totalCost = 0;
+	let requestCount = 0;
+	let branchLen = 0; // track branch length for incremental request counting
 	let gitBranch: string | null = null;
 	let gitWorktree: string | null = null;
 	let requestRender: (() => void) | undefined;
 	let throttleTimer: ReturnType<typeof setTimeout> | undefined;
 	let throttlePending = false;
-
-	// Pricing per 1M tokens (approximate)
-	function getModelPricing(modelName: string): { input: number; output: number } {
-		const name = modelName.toLowerCase();
-		if (name.includes("opus")) return { input: 15, output: 75 };
-		if (name.includes("sonnet")) return { input: 3, output: 15 };
-		if (name.includes("haiku")) return { input: 0.25, output: 1.25 };
-		if (name.includes("gpt-4o")) return { input: 2.5, output: 10 };
-		if (name.includes("gpt-4-turbo")) return { input: 10, output: 30 };
-		if (name.includes("gpt-4")) return { input: 30, output: 60 };
-		if (name.includes("gpt-3.5")) return { input: 0.5, output: 1.5 };
-		if (name.includes("deepseek")) return { input: 0.14, output: 0.28 };
-		if (name.includes("mimo")) return { input: 0.14, output: 0.28 };
-		if (name.includes("kimi")) return { input: 0.95, output: 4.00 };
-		if (name.includes("glm")) return { input: 1.00, output: 3.20 };
-		if (name.includes("minimax")) return { input: 0.30, output: 1.20 };
-		if (name.includes("qwen")) return { input: 0.50, output: 3.00 };
-		if (name.includes("step")) return { input: 0.20, output: 1.15 };
-		if (name.includes("nemotron")) return { input: 0.60, output: 2.40 };
-		if (name.includes("gemini-2.0-flash")) return { input: 0.1, output: 0.4 };
-		if (name.includes("gemini-2.5-pro")) return { input: 1.25, output: 10 };
-		if (name.includes("gemini")) return { input: 0.075, output: 0.3 };
-		// Unknown model — no cost estimate
-		return { input: 0, output: 0 };
-	}
-
-	function formatCost(cost: number): string {
-		if (cost < 0.01) return "$" + cost.toFixed(3);
-		if (cost < 1) return "$" + cost.toFixed(2);
-		return "$" + cost.toFixed(2);
-	}
 
 	// ── Home-dir shorthand ───────────────────────────────────────────────
 	function shortenPath(p: string): string {
@@ -212,14 +182,17 @@ export default function (pi: ExtensionAPI) {
 		model = shortModel(raw);
 	}
 
+	/** Full accumulation — used on init, refresh, message_end. */
 	function accumulateUsage(ctx: any): void {
 		try {
 			const branch = ctx.sessionManager?.getBranch?.();
 			if (!branch) return;
 			let totalIn = 0;
 			let totalOut = 0;
+			let count = 0;
 			for (const entry of branch) {
 				if (entry.type === "message" && entry.message?.role === "assistant") {
+					count++;
 					const usage = entry.message.usage;
 					if (usage) {
 						totalIn += usage.input || 0;
@@ -229,9 +202,31 @@ export default function (pi: ExtensionAPI) {
 			}
 			inputTokens = totalIn;
 			outputTokens = totalOut;
-			// Calculate cost
-			const pricing = getModelPricing(model);
-			totalCost = (totalIn / 1_000_000) * pricing.input + (totalOut / 1_000_000) * pricing.output;
+			requestCount = count;
+			branchLen = branch.length;
+		} catch { /* ignore */ }
+	}
+
+	/** Incremental update — only counts new assistant messages since last check. */
+	function updateUsageIncremental(ctx: any): void {
+		try {
+			const branch = ctx.sessionManager?.getBranch?.();
+			if (!branch) return;
+			const prevLen = branchLen;
+			const newLen = branch.length;
+			if (newLen <= prevLen) return; // no new entries
+			branchLen = newLen;
+			const slice = branch.slice(prevLen);
+			for (const entry of slice) {
+				if (entry.type === "message" && entry.message?.role === "assistant") {
+					requestCount++;
+					const usage = entry.message.usage;
+					if (usage) {
+						inputTokens += usage.input || 0;
+						outputTokens += usage.output || 0;
+					}
+				}
+			}
 		} catch { /* ignore */ }
 	}
 
@@ -259,12 +254,12 @@ export default function (pi: ExtensionAPI) {
 				dispose() { requestRender = undefined; },
 				invalidate() {},
 				render(width: number): string[] {
-					// ── Line 1 left: provider × model $price ────────
+					// ── Line 1 left: provider × model · N req ────────
 					let left1 = "";
 					if (provider && model) {
 						left1 = paint(WHITE, provider) + " × " + model;
-						if (totalCost > 0) {
-							left1 += " " + paint(C.orange, formatCost(totalCost));
+						if (requestCount > 0) {
+							left1 += " · " + paint(C.orange, requestCount + " req");
 						}
 					} else if (provider) {
 						left1 = paint(WHITE, provider);
@@ -286,7 +281,7 @@ export default function (pi: ExtensionAPI) {
 						}
 					}
 					if (hasContext) {
-						if (line1Right) line1Right += "  ";
+						if (line1Right) line1Right += " · ";
 						const tokenStr = contextWindow > 0
 							? `${formatTokens(contextTokens)}/${formatTokens(contextWindow)}`
 							: `${formatTokens(contextTokens)}`;
@@ -359,7 +354,7 @@ export default function (pi: ExtensionAPI) {
 		contextPercent = info.percent;
 		contextTokens = info.tokens;
 		contextWindow = info.window;
-		accumulateUsage(ctx);
+		updateUsageIncremental(ctx);
 		if (!throttlePending) {
 			throttlePending = true;
 			throttleTimer = setTimeout(() => {

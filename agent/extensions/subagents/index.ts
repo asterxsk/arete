@@ -169,24 +169,76 @@ function loadConfig(): ExtensionConfig {
 // Built-in tools that pi provides natively (no extension needed)
 const BUILTIN_TOOLS = new Set(["read", "write", "edit", "bash", "grep", "find", "ls"]);
 
-// Custom tools that require loading an extension into the subagent process
-const EXT_BASE = path.join(process.env.HOME || "~", ".pi", "agent", "extensions");
-const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
-	web_search: path.join(EXT_BASE, "web-search", "index.ts"),
-	web_fetch: path.join(EXT_BASE, "web-fetch", "index.ts"),
+// Subagent-specific tools that live in the tools/ directory (not shared extensions).
+const SUBAGENT_TOOLS: Record<string, string> = {
 	safe_bash: path.join(TOOLS_DIR, "safe-bash.ts"),
-	video_extract: path.join(EXT_BASE, "video-extract", "index.ts"),
-	youtube_search: path.join(EXT_BASE, "youtube-search", "index.ts"),
-	google_image_search: path.join(EXT_BASE, "google-image-search", "index.ts"),
-	powershell: path.join(EXT_BASE, "powershell", "index.ts"),
 };
 
-// Provider extensions needed for model resolution in subagent processes
-const PROVIDER_EXTENSIONS: string[] = [
-	path.join(EXT_BASE, "commandcode-provider", "index.ts"),
-	path.join(EXT_BASE, "todo", "index.ts"),
-	path.join(EXT_BASE, "powershell", "index.ts"),
-];
+// Dynamically discover all extensions from agent/extensions/.
+// Every directory with an index.ts is auto-included, so newly added extensions
+// are immediately available to all subagents without any explicit registration.
+const EXTENSIONS_DIR = path.resolve(EXT_DIR, "..");
+
+// Extensions with heavy UI side effects (rendering, status bars, spinners, overlays)
+// should NOT be loaded into subagent child processes — they conflict with the
+// parent's own instances and waste resources. This list is intentionally small
+// and only blocks extensions that register global UI components on load.
+const EXTENSION_BLOCKLIST = new Set(["compactui", "statusline", "spinner", "header"]); 
+
+let _extCache: { result: string[]; ts: number } | null = null;
+const CACHE_TTL_MS = 5 * 60 * 1000;
+
+async function discoverAllExtensions(): Promise<string[]> {
+	const now = Date.now();
+	if (_extCache && (now - _extCache.ts) < CACHE_TTL_MS) {
+		return _extCache.result;
+	}
+
+	const paths: string[] = [];
+	try {
+		await fs.promises.access(EXTENSIONS_DIR);
+	} catch {
+		return paths;
+	}
+
+	const entries = await fs.promises.readdir(EXTENSIONS_DIR);
+	for (const entry of entries) {
+		// Skip blocklisted extensions (heavy UI side effects)
+		if (EXTENSION_BLOCKLIST.has(entry)) continue;
+
+		const extPath = path.join(EXTENSIONS_DIR, entry);
+		let stat: fs.Stats;
+		try {
+			stat = await fs.promises.stat(extPath);
+		} catch (err) {
+			console.debug("[subagents] extension discovery skipped:", entry, (err as Error).message);
+			continue;
+		}
+		if (!stat.isDirectory()) continue;
+
+		// Skip subagents itself to avoid recursion
+		if (entry === "subagents") continue;
+
+		// Only load extensions that have an index.ts or index.js file
+		const candidates = ["index.ts", "index.js"];
+		for (const candidate of candidates) {
+			const indexPath = path.join(extPath, candidate);
+			try {
+				await fs.promises.access(indexPath);
+				// Validate via realpath to resolve symlinks correctly
+				const realPath = fs.realpathSync(indexPath);
+				paths.push(realPath);
+				break;
+			} catch (err) {
+				console.debug("[subagents] extension discovery skipped:", entry, candidate, (err as Error).message);
+			}
+		}
+	}
+
+	const sorted = paths.sort();
+	_extCache = { result: sorted, ts: Date.now() };
+	return sorted;
+}
 
 // ── Agent Discovery & Registration ────────────────────────────────────
 
@@ -306,21 +358,16 @@ async function buildPiArgs(
 
 	const args = [...piBin.baseArgs, "--mode", "json", "-p", "--no-session", "--no-skills"];
 
-	// Separate builtin tools from custom tools
-	const builtinTools: string[] = [];
-	const extensionPaths = new Set<string>();
+	// --no-extensions disables default auto-loading; we add all extensions back explicitly
+	args.push("--no-extensions");
 
+	// Builtin tools the agent's frontmatter opts into
+	const builtinTools: string[] = [];
 	for (const tool of agent.tools) {
 		if (BUILTIN_TOOLS.has(tool)) {
 			builtinTools.push(tool);
-		} else if (CUSTOM_TOOL_EXTENSIONS[tool]) {
-			extensionPaths.add(CUSTOM_TOOL_EXTENSIONS[tool]);
 		}
 	}
-
-	// Use --no-extensions then add only what we need
-	args.push("--no-extensions");
-
 	if (builtinTools.length > 0) {
 		args.push("--tools", builtinTools.join(","));
 	} else {
@@ -328,23 +375,16 @@ async function buildPiArgs(
 		args.push("--no-tools");
 	}
 
-	for (const extPath of extensionPaths) {
-		// Skip non-existent extension files so the subagent process doesn't fail
-		try {
-			fs.realpathSync(extPath);
-			args.push("--extension", extPath);
-		} catch {
-			// Extension file not found, skip gracefully
-		}
+	// Auto-discover and load extensions from agent/extensions/.
+	// Every extension with an index.ts (or index.js) is included, minus blocklisted ones.
+	for (const extPath of await discoverAllExtensions()) {
+		args.push("--extension", extPath);
 	}
 
-	// Load provider extensions so subagent can use provider-specific models
-	for (const extPath of PROVIDER_EXTENSIONS) {
-		try {
-			fs.realpathSync(extPath);
+	// Subagent-specific tools that live in the tools/ directory
+	for (const [, extPath] of Object.entries(SUBAGENT_TOOLS)) {
+		if (fs.existsSync(extPath)) {
 			args.push("--extension", extPath);
-		} catch {
-			// Extension file not found, skip gracefully
 		}
 	}
 

@@ -72,6 +72,9 @@ export function formatOverlayTaskLine(t: Task, theme: Theme, showId: boolean, pr
 	const glyph = overlayStatusGlyph(t.status, theme);
 	const subjectColor = "text";
 	let subject = theme.fg(subjectColor, t.subject);
+	if (t.status === "completed") {
+		subject = theme.strikethrough(subject);
+	}
 	let line = prefix + glyph + ` ${subject}`;
 	if (t.status === "in_progress" && t.activeForm) {
 		line += ` ${theme.fg("dim", `(${t.activeForm})`)}`;
