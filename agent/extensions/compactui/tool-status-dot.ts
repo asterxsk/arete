@@ -76,7 +76,12 @@ export function initToolStatusDot(): void {
     if (!Array.isArray(lines) || lines.length === 0) return lines;
 
     const ctx = this;
-    const dot = statusDot(ctx, !!ctx.isPartial, !!ctx.isError);
+    // Determine error state: check component flag, result flag, and empty output
+    const resultIsError = !!(ctx.result?.isError);
+    const resultIsEmpty = !ctx.isPartial && ctx.result &&
+      !(ctx.result.content?.[0]?.text?.trim());
+    const isError = !!(ctx.isError) || resultIsError || resultIsEmpty;
+    const dot = statusDot(ctx, !!ctx.isPartial, isError);
 
     let found = false;
     for (let i = 0; i < lines.length; i++) {

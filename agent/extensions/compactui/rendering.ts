@@ -279,12 +279,54 @@ export function expandedBox(theme: any, headerName: string, argsLine: string, li
 // ── Diff Coloring ──────────────────────────────────────────────────────
 
 export function colorizeDiffLine(theme: any, line: string): string {
-  // Format 1: sign-first numbered diff — "+ 59 content" or "-  59 content"
-  // sign at pos 0, then optional spaces, then digits, then rest
+  // ── Format A: "NNN + content" or "NNN - content" (number, space, sign, space, content)
+  // This is the pi edit tool's format for changed lines
+  const numSignMatch = line.match(/^( *\d+) ([+\-]) (.*)$/);
+  if (numSignMatch) {
+    const num = numSignMatch[1].trim().padStart(3, " ");
+    const sign = numSignMatch[2];
+    const rest = numSignMatch[3];
+    if (sign === '+') {
+      const greenText = "\x1b[38;2;120;220;120m";
+      return `${DIM_GREY}${num}\x1b[39m ${greenText}+${rest}\x1b[39m`;
+    }
+    const redText = "\x1b[38;2;220;120;120m";
+    return `${DIM_GREY}${num}\x1b[39m ${redText}-${rest}\x1b[39m`;
+  }
+
+  // ── Format A2: "NNN +" or "NNN -" (sign with no content — empty added/removed line)
+  const numSignEmptyMatch = line.match(/^( *\d+) ([+\-])$/);
+  if (numSignEmptyMatch) {
+    const num = numSignEmptyMatch[1].trim().padStart(3, " ");
+    const sign = numSignEmptyMatch[2];
+    if (sign === '+') {
+      const greenText = "\x1b[38;2;120;220;120m";
+      return `${DIM_GREY}${num}\x1b[39m ${greenText}+\x1b[39m`;
+    }
+    const redText = "\x1b[38;2;220;120;120m";
+    return `${DIM_GREY}${num}\x1b[39m ${redText}-\x1b[39m`;
+  }
+
+  // ── Format B: "NNN content" (number, space, content — context line, no sign)
+  const numContextMatch = line.match(/^( *\d+) (.+)$/);
+  if (numContextMatch) {
+    const num = numContextMatch[1].trim().padStart(3, " ");
+    const rest = numContextMatch[2];
+    return `${DIM_GREY}${num}\x1b[39m  ${rest}`;
+  }
+
+  // ── Format C: bare number — "NNN" or "NNN " (empty context line)
+  const numBareMatch = line.match(/^( *\d+) *$/);
+  if (numBareMatch) {
+    const num = numBareMatch[1].trim().padStart(3, " ");
+    return `${DIM_GREY}${num}\x1b[39m`;
+  }
+
+  // ── Format D: sign-first — "+ 59 content" or "- 59 content"
   const signFirstMatch = line.match(/^([+\-]) *(\d+)(.*)$/);
   if (signFirstMatch) {
     const sign = signFirstMatch[1];
-    const num = signFirstMatch[2].padStart(4, " ");
+    const num = signFirstMatch[2].padStart(3, " ");
     const rest = signFirstMatch[3];
     if (sign === '+') {
       const greenText = "\x1b[38;2;120;220;120m";
@@ -294,34 +336,7 @@ export function colorizeDiffLine(theme: any, line: string): string {
     return `${DIM_GREY}${num}\x1b[39m ${redText}-${rest}\x1b[39m`;
   }
 
-  // Format 2: number-first numbered diff — "114 -content" or "114 +content" or "114  context"
-  // digits, then space(s), then sign or space, then rest
-  const numFirstMatch = line.match(/^( *\d+) ([+\- ])(.*)$/);
-  if (numFirstMatch) {
-    const num = numFirstMatch[1].trim().padStart(4, " ");
-    const sign = numFirstMatch[2];
-    const rest = numFirstMatch[3];
-    if (sign === '+') {
-      const greenText = "\x1b[38;2;120;220;120m";
-      return `${DIM_GREY}${num}\x1b[39m ${greenText}+${rest}\x1b[39m`;
-    }
-    if (sign === '-') {
-      const redText = "\x1b[38;2;220;120;120m";
-      return `${DIM_GREY}${num}\x1b[39m ${redText}-${rest}\x1b[39m`;
-    }
-    return `${DIM_GREY}${num}\x1b[39m   ${rest}`;
-  }
-
-  // Format 3: context-only numbered line — "  59 content" (no sign)
-  const contextMatch = line.match(/^( *\d+)  (.*)$/);
-  if (contextMatch) {
-    const num = contextMatch[1].trim().padStart(4, " ");
-    const rest = contextMatch[2];
-    return `${DIM_GREY}${num}\x1b[39m   ${rest}`;
-  }
-
-  // Standard unified diff format (no line numbers): sign at start
-  // e.g. "+added line", "-removed line"
+  // ── Format E: standard unified diff (no line numbers): "+added", "-removed"
   if (line.startsWith('+')) {
     const greenText = "\x1b[38;2;120;220;120m";
     return `${greenText}+${line.slice(1)}\x1b[39m`;

@@ -854,8 +854,7 @@ export default function (pi: ExtensionAPI) {
             const result: string[] = [];
             // Summary line
             result.push(INDENT + DIM_GREY + "\u23bf " + summary + "\x1b[39m");
-            // Diff lines: wrap each colored line in the available width minus INDENT (1 char)
-            // Use wrapDiffLine on the coloredLine alone, then prepend INDENT to each output line
+            // Diff lines: prepend INDENT to match the ⎿ summary line above.
             for (const coloredLine of coloredDiffLines) {
               const innerWidth = Math.max(10, width - INDENT.length);
               const wrapped = wrapDiffLine(coloredLine, innerWidth);
