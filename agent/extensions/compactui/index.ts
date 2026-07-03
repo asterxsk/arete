@@ -264,7 +264,7 @@ export default function (pi: ExtensionAPI) {
             line = `\x1b[38;2;140;140;140m${line}\x1b[39m`;
             
             if (i === 0) {
-              result.push(` ∴  ${line}`);
+              result.push(`\x1b[38;2;140;140;140m∴\x1b[39m  ${line}`);
             } else {
               result.push(`    ${line}`);
             }

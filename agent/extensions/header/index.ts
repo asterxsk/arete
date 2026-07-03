@@ -7,6 +7,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { execSync } from "child_process";
 import * as os from "os";
+import { registerFeedbackCommand } from "./feedback";
 
 const RESET = "\x1b[0m";
 const ORANGE = "\x1b[38;2;255;165;0m";
@@ -109,7 +110,7 @@ export default function (pi: ExtensionAPI) {
     name: "header",
     description:
       "ASCII-art banner header with version, provider, model, and info widget",
-    commands: ["/update"],
+    commands: ["/update", "/feedback"],
   });
 
   if (typeof (pi as any).registerCommand === 'function') {
@@ -213,6 +214,8 @@ export default function (pi: ExtensionAPI) {
       }
     });
   }
+
+  registerFeedbackCommand(pi);
 
   pi.on("session_start", async (_event, ctx) => {
     refreshModel(ctx);
