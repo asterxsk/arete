@@ -145,10 +145,27 @@ export function wrapWithPrefix(rl: string, width: number): string[] {
   const visible = rl.replace(/\x1b\[[0-9;]*m/g, "");
   // Match prefix: leading spaces + ⎿ (U+23BF) or │ or └ + trailing spaces
   // This handles formats like " ⎿ " or " │ " or "└ " or just "│ "
-  const match = visible.match(/^(\s*[\u23BF\u2502\u2514]\s*)/);
-  if (!match || match[1].length === 0) return wrapTextWithAnsi(rl, width);
+  const boxMatch = visible.match(/^(\s*[\u23BF\u2502\u2514]\s*)/);
 
-  const prefixLen = match[1].length;
+  if (!boxMatch || boxMatch[1].length === 0) {
+    // No box-drawing char — check for plain leading-spaces prefix (continuation lines)
+    // e.g. "   content" where the 3 leading spaces are the indent
+    const spaceMatch = visible.match(/^(\s+)/);
+    if (!spaceMatch || spaceMatch[1].length === 0) return wrapTextWithAnsi(rl, width);
+    const prefixLen = spaceMatch[1].length;
+    const [ansiPrefix, contentStr] = splitAnsiPrefix(rl, prefixLen);
+    const contentWidth = Math.max(10, width - prefixLen - 2);
+    const wrappedContent = wrapTextWithAnsi(contentStr, contentWidth);
+    if (wrappedContent.length === 0) return [ansiPrefix];
+    const result = [ansiPrefix + wrappedContent[0]];
+    const continuationPrefix = " ".repeat(prefixLen);
+    for (let j = 1; j < wrappedContent.length; j++) {
+      result.push(continuationPrefix + wrappedContent[j]);
+    }
+    return result;
+  }
+
+  const prefixLen = boxMatch[1].length;
   const [ansiPrefix, contentStr] = splitAnsiPrefix(rl, prefixLen);
 
   // Check if content starts with line number (e.g., "   59  content")
@@ -165,7 +182,7 @@ export function wrapWithPrefix(rl: string, width: number): string[] {
   const result = [ansiPrefix + (lineNumMatch ? lineNumMatch[1] : "") + wrappedContent[0]];
   // Subsequent lines: replace box-drawing char with space, keep trailing spaces
   // Do NOT include line number on continuation lines
-  const subsequentPrefix = match[1].replace(/[\u23BF\u2502\u2514]/g, " ");
+  const subsequentPrefix = boxMatch[1].replace(/[\u23BF\u2502\u2514]/g, " ");
   for (let j = 1; j < wrappedContent.length; j++) {
     result.push(subsequentPrefix + " ".repeat(lineNumLen) + wrappedContent[j]);
   }
@@ -262,12 +279,28 @@ export function expandedBox(theme: any, headerName: string, argsLine: string, li
 // ── Diff Coloring ──────────────────────────────────────────────────────
 
 export function colorizeDiffLine(theme: any, line: string): string {
-  const match = line.match(/^([\+\- ]?)\s*(\d+)(.*)$/);
-  if (match) {
-    const sign = match[1] || " ";
-    const num = match[2].padStart(4, " ");
-    const rest = match[3];
+  // Format 1: sign-first numbered diff — "+ 59 content" or "-  59 content"
+  // sign at pos 0, then optional spaces, then digits, then rest
+  const signFirstMatch = line.match(/^([+\-]) *(\d+)(.*)$/);
+  if (signFirstMatch) {
+    const sign = signFirstMatch[1];
+    const num = signFirstMatch[2].padStart(4, " ");
+    const rest = signFirstMatch[3];
+    if (sign === '+') {
+      const greenText = "\x1b[38;2;120;220;120m";
+      return `${DIM_GREY}${num}\x1b[39m ${greenText}+${rest}\x1b[39m`;
+    }
+    const redText = "\x1b[38;2;220;120;120m";
+    return `${DIM_GREY}${num}\x1b[39m ${redText}-${rest}\x1b[39m`;
+  }
 
+  // Format 2: number-first numbered diff — "114 -content" or "114 +content" or "114  context"
+  // digits, then space(s), then sign or space, then rest
+  const numFirstMatch = line.match(/^( *\d+) ([+\- ])(.*)$/);
+  if (numFirstMatch) {
+    const num = numFirstMatch[1].trim().padStart(4, " ");
+    const sign = numFirstMatch[2];
+    const rest = numFirstMatch[3];
     if (sign === '+') {
       const greenText = "\x1b[38;2;120;220;120m";
       return `${DIM_GREY}${num}\x1b[39m ${greenText}+${rest}\x1b[39m`;
@@ -279,48 +312,86 @@ export function colorizeDiffLine(theme: any, line: string): string {
     return `${DIM_GREY}${num}\x1b[39m   ${rest}`;
   }
 
+  // Format 3: context-only numbered line — "  59 content" (no sign)
+  const contextMatch = line.match(/^( *\d+)  (.*)$/);
+  if (contextMatch) {
+    const num = contextMatch[1].trim().padStart(4, " ");
+    const rest = contextMatch[2];
+    return `${DIM_GREY}${num}\x1b[39m   ${rest}`;
+  }
+
+  // Standard unified diff format (no line numbers): sign at start
+  // e.g. "+added line", "-removed line"
+  if (line.startsWith('+')) {
+    const greenText = "\x1b[38;2;120;220;120m";
+    return `${greenText}+${line.slice(1)}\x1b[39m`;
+  }
+  if (line.startsWith('-')) {
+    const redText = "\x1b[38;2;220;120;120m";
+    return `${redText}-${line.slice(1)}\x1b[39m`;
+  }
+
   return theme.fg("text", line);
 }
 
 /**
  * Wrap a diff line with proper indentation for continuation lines.
- * For + lines: prefix is "   NNN +", continuation is "         +"
- * For - lines: prefix is "   NNN -", continuation is "         -"
- * For context lines: prefix is "   NNN  ", continuation is "         "
+ * For numbered diffs: "   NNN +" → continuation "         +"
+ * For standard unified diffs: "+content" → continuation "+"
  */
 export function wrapDiffLine(rl: string, width: number): string[] {
   const visible = rl.replace(/\x1b\[[0-9;]*m/g, "");
-  
-  // Match diff prefix: spaces + line number + space + sign
+
+  // Match numbered diff prefix: spaces + line number + space + sign
   // e.g., "   59 +" or "   59 -" or "   59  "
-  const match = visible.match(/^(\s*\d+\s*)([+\- ])/);
-  if (!match || match[1].length === 0) return wrapTextWithAnsi(rl, width);
+  const numberedMatch = visible.match(/^(\s*\d+\s*)([+\- ])/);
+  if (numberedMatch && numberedMatch[1].length > 0) {
+    const numAndSpaces = numberedMatch[1];
+    const sign = numberedMatch[2];
+    const prefixLen = numAndSpaces.length + 1; // +1 for the sign
 
-  const numAndSpaces = match[1]; // e.g., "   59 " or "   59 "
-  const sign = match[2]; // "+", "-", or " "
-  const prefixLen = numAndSpaces.length + 1; // +1 for the sign
-  
-  const [ansiPrefix, contentStr] = splitAnsiPrefix(rl, prefixLen);
+    const [ansiPrefix, contentStr] = splitAnsiPrefix(rl, prefixLen);
 
-  // Content width with 2-char right margin
-  const contentWidth = Math.max(10, width - prefixLen - 2);
-  const wrappedContent = wrapTextWithAnsi(contentStr, contentWidth);
-  if (wrappedContent.length === 0) return [ansiPrefix];
+    // Content width with 2-char right margin
+    const contentWidth = Math.max(10, width - prefixLen - 2);
+    const wrappedContent = wrapTextWithAnsi(contentStr, contentWidth);
+    if (wrappedContent.length === 0) return [ansiPrefix];
 
-  const result = [ansiPrefix + wrappedContent[0]];
-  
-  // Subsequent lines: no line number, just spaces + colored sign
-  const signColor = sign === '+' 
-    ? "\x1b[38;2;120;220;120m" 
-    : sign === '-' 
-      ? "\x1b[38;2;220;120;120m" 
-      : "";
-  const subsequentPrefix = " ".repeat(numAndSpaces.length) + (signColor ? signColor + sign + "\x1b[39m" : "   ");
-  
-  for (let j = 1; j < wrappedContent.length; j++) {
-    result.push(subsequentPrefix + wrappedContent[j]);
+    const result = [ansiPrefix + wrappedContent[0]];
+
+    // Subsequent lines: no line number, just spaces + colored sign
+    const signColor = sign === '+'
+      ? "\x1b[38;2;120;220;120m"
+      : sign === '-'
+        ? "\x1b[38;2;220;120;120m"
+        : "";
+    const subsequentPrefix = " ".repeat(numAndSpaces.length) + (signColor ? signColor + sign + "\x1b[39m" : "   ");
+
+    for (let j = 1; j < wrappedContent.length; j++) {
+      result.push(subsequentPrefix + wrappedContent[j]);
+    }
+    return result;
   }
-  return result;
+
+  // Standard unified diff format (no line numbers): colored sign is first visible char
+  // After colorizeDiffLine, ANSI codes precede the sign character
+  const signMatch = visible.match(/^([+\- ])/);
+  if (signMatch) {
+    const prefixLen = 1; // just the sign char
+    const [ansiPrefix, contentStr] = splitAnsiPrefix(rl, prefixLen);
+    const contentWidth = Math.max(10, width - prefixLen - 2);
+    const wrappedContent = wrapTextWithAnsi(contentStr, contentWidth);
+    if (wrappedContent.length === 0) return [ansiPrefix];
+
+    const result = [ansiPrefix + wrappedContent[0]];
+    // Continuation: repeat the colored sign as alignment prefix
+    for (let j = 1; j < wrappedContent.length; j++) {
+      result.push(ansiPrefix + wrappedContent[j]);
+    }
+    return result;
+  }
+
+  return wrapTextWithAnsi(rl, width);
 }
 
 export function diffExpandedBox(theme: any, headerName: string, argsLine: string, lines: string[], limit: number, moreSuffix = ""): Component {

@@ -47,7 +47,7 @@ export BU_CDP_URL='http://127.0.0.1:9222'
 Or on Windows:
 ```powershell
 Start-Process "C:\Program Files\Google\Chrome\Application\chrome.exe" `
-    -ArgumentList "--remote-debugging-port=9222","--user-data-dir=C:\Users\prithish\chrome-automation-profile"
+    -ArgumentList "--remote-debugging-port=9222","--user-data-dir=$env:USERPROFILE\chrome-automation-profile"
 Start-Sleep -Seconds 3
 $env:BU_CDP_URL='http://127.0.0.1:9222'
 ```
@@ -73,4 +73,4 @@ $env:BU_CDP_URL='http://127.0.0.1:9222'
 
 ## Full Reference
 
-`C:\Users\prithish\browser-harness\PI_AGENT_GUIDE.md`
+`$env:USERPROFILE\browser-harness\PI_AGENT_GUIDE.md`

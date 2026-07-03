@@ -42,9 +42,11 @@ Each subfolder is a self-contained pi extension. Pi auto-loads any `extensions/<
 
 ## Child DOX Index
 - `agentzero/` — `/init` command (create or audit AGENTS.md) and global AGENTS.md injection into system prompt
+- `artifacts/` — `create_artifact` tool (hidden from chat) + `/artifacts` command: save/browse standalone html/md artifacts, opening html in the default browser and md in a fullscreen reader
 - `compactui/` — Compact tool rendering, responsive wrapping, assistant time tracking footer, tagged thinking dimming, tool status dot, and auto-hide notifications (3s).
 - `context/` — `/context` overlay: token grid breakdown with per-category color-coded visualization
 - `ferment/` — Structured delivery framework (scope, phases, steps) for long-running agent tasks
+- `9router-provider/` — Local/remote 9router AI gateway provider with auto-discovered models and `/login` integration
 - `filechanges/` — `/filechanges` overlay + accept/decline; tracks file modifications per session and exposes counts for the statusline
 - `goal/` — `/goal` command — autonomous task orchestrator with pause/resume, turn tracking, history
 - `header/` — Banner header: ASCII art on the left, provider/model/version info panel on the right

@@ -15,3 +15,5 @@
 - **Loopback Resolution**: If you are `unsure` or `stuck` on a certian issue, instead of keeping on trying and `failing`, ask the `user` for help or `guidance`. Dont waste time doing the trial and error method.
 
 - **Web search**: Always use no summary mode in the workflow.
+
+- **Response Formatting**: Do NOT add unnecessary suffixes or prefixes to responses such as timing indicators (e.g., "✓ 19s", "✻ Worked for Xs") or other decorative elements. Keep responses clean and concise.
