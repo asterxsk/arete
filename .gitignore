@@ -19,6 +19,9 @@
 !agent/extensions/
 !agent/themes/
 
+# Explicitly ignore specific files and folder inside agent/
+agent/extensions/9router-provider/models-cache.json
+
 # Un-ignore everything recursively inside extensions and themes
 !agent/extensions/**
 !agent/themes/**

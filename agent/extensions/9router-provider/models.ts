@@ -94,17 +94,57 @@ export async function loadCachedModels(): Promise<PiModelConfig[] | null> {
   }
 }
 
+/**
+ * Reconcile a fresh server model list against the cached entries.
+ *
+ * - Drops cached models absent from the fresh list (server removed them).
+ * - Preserves cached entries for models still on the server (keeps any richer
+ *   capability data that may have been tuned or populated from a prior fetch).
+ * - Adds new models from the server that are not in the cache.
+ *
+ * Idempotent: calling repeatedly with the same inputs returns the same output.
+ */
+export function reconcileModels(cached: PiModelConfig[], fresh: PiModelConfig[]): PiModelConfig[] {
+  const freshIds = new Set(fresh.map((m) => m.id))
+  const result: PiModelConfig[] = []
+  const seenIds = new Set<string>()
+
+  // Keep cached entries that still exist on the server (preserve richer caps)
+  for (const cachedModel of cached) {
+    if (freshIds.has(cachedModel.id)) {
+      result.push(cachedModel)
+      seenIds.add(cachedModel.id)
+    }
+  }
+
+  // Add new models from the server not already in the result
+  for (const freshModel of fresh) {
+    if (!seenIds.has(freshModel.id)) {
+      result.push(freshModel)
+    }
+  }
+
+  return result
+}
+
 export async function fetchAndCacheModels(endpoint?: string, apiKey?: string): Promise<PiModelConfig[]> {
-  const models = await fetchModels(endpoint, apiKey)
-  const piModels = models.map(modelToPiModel)
+  const rawModels = await fetchModels(endpoint, apiKey)
+  const freshPiModels = rawModels.map(modelToPiModel)
+
+  // Reconcile with existing cache: prune removed, keep rich caps, add new
+  let reconciled = freshPiModels
+  const cached = await loadCachedModels()
+  if (cached && cached.length > 0) {
+    reconciled = reconcileModels(cached, freshPiModels)
+  }
 
   // Write cache
   mkdirSync(MODELS_CACHE_DIR, { recursive: true })
   writeFileSync(
     MODELS_CACHE_PATH,
-    JSON.stringify({ updatedAt: new Date().toISOString(), models: piModels }, null, 2),
+    JSON.stringify({ updatedAt: new Date().toISOString(), models: reconciled }, null, 2),
     "utf-8"
   )
 
-  return piModels
+  return reconciled
 }

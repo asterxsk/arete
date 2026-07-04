@@ -21,6 +21,7 @@ Provides pi with access to a local or remote 9router instance via its OpenAI-com
 - Models are fetched from `{endpoint}/v1/models` on startup.
 - The endpoint can be overridden via `NINEROUTER_URL` environment variable.
 - API key is optional — leave blank for local unauthenticated mode.
+- Cache reconciliation uses `reconcileModels()` in `models.ts`: prune removed → preserve cached → append new.
 
 ## Verification
 - Extension loads automatically from `extensions/9router-provider/index.ts`.
