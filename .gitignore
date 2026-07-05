@@ -36,7 +36,7 @@ agent/extensions/artifacts/npm_modules/*
 agent/extensions/filechanges/node_modules/
 
 # Ignore all node_modules inside extensions
-agent/extensions/**/*.node_modules/*
+agent/extensions/**/node_modules/*
 
 # Explicitly ignore crash log (though * already ignores it, being explicit)
 agent/pi-crash.log

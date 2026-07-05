@@ -1,0 +1,20 @@
+{
+  "name": "pi-artifacts-extension",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Rich artifact management for Pi: create, validate, preview, and browse markdown/html artifacts",
+  "dependencies": {
+    "@picocss/pico": "^2.1.1",
+    "chart.js": "^4.5.1",
+    "htmlhint": "^1.9.2",
+    "katex": "^0.16.47",
+    "markdown-it": "^14.1.0",
+    "markdownlint": "^0.38.0",
+    "prettier": "^3.8.4"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}
