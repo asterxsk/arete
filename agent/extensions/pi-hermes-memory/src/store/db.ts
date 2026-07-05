@@ -68,15 +68,26 @@ function loadDatabaseCtor(): DatabaseCtor {
     return createBunCompatDatabaseCtor(require);
   }
 
-  try {
-    const mod = require('better-sqlite3') as { default?: DatabaseCtor } | DatabaseCtor;
-    return (mod as { default?: DatabaseCtor }).default ?? (mod as DatabaseCtor);
-  } catch (err) {
-    throw err;
-  }
+  const mod = require('better-sqlite3') as { default?: DatabaseCtor } | DatabaseCtor;
+  return (mod as { default?: DatabaseCtor }).default ?? (mod as DatabaseCtor);
 }
 
-const Database = loadDatabaseCtor();
+// Lazily resolve database constructor at first use — avoid crash on missing npm deps
+let _Database: DatabaseCtor | undefined;
+let _dbLoadError: Error | undefined;
+
+function getDatabaseCtor(): DatabaseCtor {
+  if (_Database) return _Database;
+  if (_dbLoadError) throw _dbLoadError;
+  try {
+    _Database = loadDatabaseCtor();
+    return _Database;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    _dbLoadError = new Error("Missing npm dep 'better-sqlite3' or failed to load. Run `npm install` in agent/extensions/pi-hermes-memory/. " + msg);
+    throw _dbLoadError;
+  }
+}
 
 export class DatabaseManager {
   private db: DatabaseLike | null = null;
@@ -106,7 +117,7 @@ export class DatabaseManager {
       fs.mkdirSync(dir, { recursive: true });
     }
 
-    const db = new Database(this.dbPath);
+    const db = new (getDatabaseCtor())(this.dbPath);
 
     // Enable WAL mode + FK enforcement for each connection.
     db.exec('PRAGMA journal_mode = WAL');

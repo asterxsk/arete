@@ -1,9 +1,8 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import prettier from "prettier";
 import type { ValidationFinding } from "../types.ts";
 
-const require = createRequire(import.meta.url);
+const _htmlRequire = createRequire(import.meta.url);
 
 interface HtmlHintMessage {
   rule: { id: string };
@@ -17,7 +16,23 @@ interface HtmlHintLike {
   verify(html: string, ruleset?: Record<string, unknown>): HtmlHintMessage[];
 }
 
-const { HTMLHint } = require("htmlhint") as { HTMLHint: HtmlHintLike };
+// Lazy-load deps so missing npm modules don't crash Pi on startup
+let _prettier: typeof import("prettier") | undefined;
+let _HTMLHint: HtmlHintLike | undefined;
+
+function ensureDeps(): boolean {
+  if (_prettier && _HTMLHint) return true;
+  try {
+    if (!_prettier) _prettier = _htmlRequire("prettier") as typeof import("prettier");
+    if (!_HTMLHint) {
+      const mod = _htmlRequire("htmlhint") as { HTMLHint: HtmlHintLike };
+      _HTMLHint = mod.HTMLHint;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export async function validateHtmlArtifact(
   entryPath: string,
@@ -43,8 +58,12 @@ async function formatHtml(
   entryPath: string,
   warnings: ValidationFinding[],
 ): Promise<string> {
+  if (!ensureDeps() || !_prettier) {
+    warnings.push({ code: "prettier", message: "Prettier not available — install npm deps in agent/extensions/artifacts/", file: entryPath });
+    return html;
+  }
   try {
-    return await prettier.format(html, { filepath: entryPath, parser: "html" });
+    return await _prettier.format(html, { filepath: entryPath, parser: "html" });
   } catch (error) {
     warnings.push({
       code: "prettier",
@@ -56,7 +75,10 @@ async function formatHtml(
 }
 
 function lintHtml(html: string, entryPath: string): ValidationFinding[] {
-  const messages = HTMLHint.verify(html, {
+  if (!ensureDeps() || !_HTMLHint) {
+    return [{ code: "htmlhint/missing", message: "HTMLHint not available — install npm deps in agent/extensions/artifacts/", file: entryPath }];
+  }
+  const messages = _HTMLHint.verify(html, {
     "tagname-lowercase": true,
     "attr-lowercase": true,
     "attr-value-double-quotes": true,

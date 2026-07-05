@@ -5,9 +5,19 @@ import {
 	isWriteToolResult,
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { createTwoFilesPatch } from "diff";
 import { readFile, writeFile, rm, mkdir } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
+import { createRequire } from "node:module";
+
+// Check that npm dependency 'diff' is installed — avoid crash on missing deps
+const _require = createRequire(import.meta.url);
+let _diffCreateTwoFilesPatch: ((oldFile: string, newFile: string, oldStr: string, newStr: string, oldHeader: string, newHeader: string, opts?: { context?: number }) => string) | undefined;
+try {
+	const diffModule = _require("diff");
+	_diffCreateTwoFilesPatch = diffModule.createTwoFilesPatch;
+} catch {
+	console.warn("[filechanges] Missing npm dep 'diff'. Run `npm install` in agent/extensions/filechanges/. File diff features disabled.");
+}
 
 // Custom session entry types
 // New name: filechanges
@@ -125,7 +135,8 @@ function buildWidgetLines(tracked: Map<string, TrackedFile>, theme?: any): strin
 }
 
 function patchFromBaseline(displayPath: string, original: string | null, current: string): string {
-	return createTwoFilesPatch(
+	if (!_diffCreateTwoFilesPatch) return "// diff unavailable — install 'diff' npm package";
+	return _diffCreateTwoFilesPatch(
 		displayPath,
 		displayPath,
 		original ?? "",
@@ -138,7 +149,20 @@ function patchFromBaseline(displayPath: string, original: string | null, current
 
 async function ensureParentDir(absPath: string): Promise<void> {
 	await mkdir(dirname(absPath), { recursive: true });
-}	export default function (pi: ExtensionAPI) {
+}
+
+export default function (pi: ExtensionAPI) {
+	// Bail out if npm dependencies are missing
+	if (!_diffCreateTwoFilesPatch) {
+		console.warn("[filechanges] Extension disabled: missing npm dependency 'diff'.");
+		(globalThis as any).__pi_extension_features?.push({
+			name: "filechanges",
+			description: "File change tracking (DISABLED — missing dep 'diff')",
+			status: "disabled",
+		});
+		return;
+	}
+
 	// Self-register in global feature registry
 	(globalThis as any).__pi_extension_features?.push({
 		name: "filechanges",

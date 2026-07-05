@@ -1,9 +1,30 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import prettier from "prettier";
-import { lint } from "markdownlint/promise";
-import * as katex from "katex";
 import type { ValidationFinding } from "../types.ts";
+
+const _mdRequire = createRequire(import.meta.url);
+
+// Lazy-load deps so missing npm modules don't crash Pi on startup
+let _prettier: typeof import("prettier") | undefined;
+let _markdownlintLint: ((opts: any) => Promise<Record<string, any[]>>) | undefined;
+let _katexRenderToString: ((expr: string, opts?: any) => string) | undefined;
+
+function ensureDeps(): boolean {
+  try {
+    if (!_prettier) _prettier = _mdRequire("prettier") as typeof import("prettier");
+    if (!_markdownlintLint) {
+      const m = _mdRequire("markdownlint/promise") as { lint: typeof _markdownlintLint };
+      _markdownlintLint = m.lint;
+    }
+    if (!_katexRenderToString) {
+      const k = _mdRequire("katex") as { renderToString: typeof _katexRenderToString };
+      _katexRenderToString = k.renderToString;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export async function validateMarkdownArtifact(
   entryPath: string,
@@ -30,8 +51,12 @@ async function formatMarkdown(
   entryPath: string,
   warnings: ValidationFinding[],
 ): Promise<string> {
+  if (!ensureDeps() || !_prettier) {
+    warnings.push({ code: "prettier", message: "Prettier not available — install npm deps in agent/extensions/artifacts/", file: entryPath });
+    return markdown;
+  }
   try {
-    return await prettier.format(markdown, {
+    return await _prettier.format(markdown, {
       filepath: entryPath,
       parser: "markdown",
     });
@@ -49,7 +74,10 @@ async function lintMarkdown(
   markdown: string,
   entryPath: string,
 ): Promise<ValidationFinding[]> {
-  const results = await lint({
+  if (!ensureDeps() || !_markdownlintLint) {
+    return [{ code: "markdownlint/missing", message: "markdownlint not available — install npm deps in agent/extensions/artifacts/", file: entryPath }];
+  }
+  const results = await _markdownlintLint({
     strings: { [entryPath]: markdown },
     config: {
       default: true,
@@ -113,7 +141,16 @@ function validateKatexExpression(input: {
   findings: ValidationFinding[];
 }): void {
   try {
-    katex.renderToString(input.expression, {
+    if (!ensureDeps() || !_katexRenderToString) {
+      input.findings.push({
+        code: "katex",
+        message: "KaTeX not available — install npm deps in agent/extensions/artifacts/",
+        file: input.entryPath,
+        line: input.line,
+      });
+      return;
+    }
+    _katexRenderToString(input.expression, {
       displayMode: input.displayMode,
       throwOnError: true,
       strict: "error",
@@ -127,6 +164,8 @@ function validateKatexExpression(input: {
     });
   }
 }
+
+
 
 function findMermaidWarnings(
   markdown: string,

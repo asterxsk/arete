@@ -30,7 +30,7 @@ agent/extensions/9router-provider/models-cache.json
 agent/extensions/commandcode-provider/
 agent/extensions/kimchi-provider/
 agent/extensions/**/docs/
-agent/extensions/artifacts/npm_modules/*
+agent/extensions/9router-provider/models_cache.json
 
 # Re-ignore filechanges node_modules (accidentally staged — use git rm --cached)
 agent/extensions/filechanges/node_modules/

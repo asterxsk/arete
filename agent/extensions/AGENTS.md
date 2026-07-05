@@ -10,6 +10,7 @@ Each subfolder is a self-contained pi extension. Pi auto-loads any `extensions/<
 ## Local Contracts
 - **Independence**: Each extension folder is self-contained — no extension imports from a sibling.
 - **Bridges**: Cross-extension integration uses `globalThis` bridges (e.g., `globalThis.__pi_copilot_usage`, `globalThis.__pi_goal_state`). Bridge keys are prefixed with `__pi_` and unique per extension.
+- **NPM dep safety**: Every extension with npm dependencies must guard all top-level requires/imports in a try/catch. Missing deps log a warning, register with `status: "degraded"` or `status: "disabled"`, and return early rather than crashing Pi.
 - **Graceful degradation**: When an extension's peer is missing, it degrades gracefully. Widgets and commands from other extensions continue working.
 - **Self-contained rendering**: Extensions include their own components (e.g., `CompactToolBox`) rather than importing from a shared extension to avoid tight coupling.
 - **UI Primitives**: Extensions use `ctx.ui` methods (`setHeader`, `setFooter`, `setWidget`, `notify`, `custom`, `select`, `input`) independently.
@@ -21,6 +22,7 @@ Each subfolder is a self-contained pi extension. Pi auto-loads any `extensions/<
   3. Add an `AGENTS.md` explaining purpose, API surface, and how to remove
   4. Update the Child DOX Index in this file
   - If npm deps are needed, add `"pi": { "extensions": ["./index.ts"] }` to `package.json` and run `npm install`.
+  - **All npm imports must be guarded**: wrap `require()` or dynamic `import()` in a try/catch at the top of `index.ts` (or call a lazy init function). If the dep is missing, log a warning, register with `status: "disabled"` (if non-optional) or `status: "degraded"` (if partial functionality), and return early. See `filechanges`, `artifacts`, and `pi-hermes-memory` for reference patterns.
 - **Feature Registration Pattern**: To make the LLM aware of a new extension, add a registration call at the top of its `default export`:
   ```ts
   export default function (pi: ExtensionAPI) {

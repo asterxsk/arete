@@ -1,12 +1,11 @@
 import { createRequire } from "node:module";
-import * as katex from "katex";
 import {
   artifactChromeStyles,
   renderArtifactToolbar,
   type ArtifactPageChrome,
 } from "./viewer-ui.ts";
 
-const require = createRequire(import.meta.url);
+const _mdRequire = createRequire(import.meta.url);
 
 type MarkdownItRenderer = {
   render: (source: string) => string;
@@ -38,13 +37,34 @@ type MarkdownItConstructor = new (options?: {
   typographer?: boolean;
 }) => MarkdownItInstance;
 
-const MarkdownIt = require("markdown-it") as MarkdownItConstructor;
+// Lazy-load deps so missing npm modules don't crash Pi on startup
+let _katexRenderToString: ((expr: string, opts?: any) => string) | undefined;
+let _markdownIt: MarkdownItInstance | undefined;
+let _mdDepsChecked = false;
 
-const markdownIt = new MarkdownIt({
-  html: false,
-  linkify: true,
-  typographer: false,
-});
+function ensureMdDeps(): boolean {
+  if (_mdDepsChecked) return !!_markdownIt;
+  _mdDepsChecked = true;
+  try {
+    if (!_katexRenderToString) {
+      _katexRenderToString = _mdRequire("katex").renderToString;
+    }
+    if (!_markdownIt) {
+      const MarkdownIt = _mdRequire("markdown-it") as MarkdownItConstructor;
+      _markdownIt = new MarkdownIt({
+        html: false,
+        linkify: true,
+        typographer: false,
+      });
+      _markdownIt.core.ruler.after("inline", "pi-task-lists", taskListsRule);
+      _markdownIt.core.ruler.after("block", "pi-alerts", alertsRule);
+    }
+    return true;
+  } catch {
+    console.warn("[artifacts] Missing npm deps 'katex' or 'markdown-it'. Run `npm install` in agent/extensions/artifacts/. Markdown rendering disabled.");
+    return false;
+  }
+}
 
 const ALERT_TYPES = new Set(["NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION"]);
 
@@ -134,6 +154,17 @@ export function renderMarkdownPage(
   title: string,
   artifact?: string | ArtifactPageChrome,
 ): string {
+  // Check deps before rendering; if missing, show fallback
+  if (!ensureMdDeps()) {
+    return `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Artifact — deps missing</title></head>
+<body>
+<p>Artifact rendering requires 'katex' and 'markdown-it' npm packages.</p>
+<p>Run <code>npm install</code> in the <code>agent/extensions/artifacts/</code> directory, then restart Pi.</p>
+</body>
+</html>`;
+  }
   const body = renderMarkdownBody(markdown);
   const escapedTitle = escapeHtml(title);
   const artifactId = typeof artifact === "string" ? artifact : artifact?.id;
@@ -181,9 +212,10 @@ ${body}
 }
 
 function renderMarkdownBody(markdown: string): string {
+  if (!_markdownIt) return `<pre>${escapeHtml(markdown)}</pre>`;
   const replacements: MathReplacement[] = [];
   const markdownWithPlaceholders = replaceMath(markdown, replacements);
-  let html = markdownIt.render(markdownWithPlaceholders);
+  let html = _markdownIt.render(markdownWithPlaceholders);
 
   for (const replacement of replacements) {
     if (replacement.block) {
@@ -212,7 +244,7 @@ function replaceMath(
     const placeholder = `@@PI_ARTIFACT_MATH_BLOCK_${replacements.length}@@`;
     replacements.push({
       placeholder,
-      html: katex.renderToString(expression.trim(), {
+      html: _katexRenderToString!(expression.trim(), {
         displayMode: true,
         throwOnError: false,
         strict: "ignore",
@@ -231,7 +263,7 @@ function replaceMath(
       const placeholder = `@@PI_ARTIFACT_MATH_INLINE_${replacements.length}@@`;
       replacements.push({
         placeholder,
-        html: katex.renderToString(expression.trim(), {
+        html: _katexRenderToString!(expression.trim(), {
           displayMode: false,
           throwOnError: false,
           strict: "ignore",
