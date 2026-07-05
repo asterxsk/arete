@@ -68,9 +68,6 @@ function ensureMdDeps(): boolean {
 
 const ALERT_TYPES = new Set(["NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION"]);
 
-markdownIt.core.ruler.after("inline", "pi-task-lists", taskListsRule);
-markdownIt.core.ruler.after("block", "pi-alerts", alertsRule);
-
 function taskListsRule(state: MdState): void {
   const tokens = state.tokens;
 
