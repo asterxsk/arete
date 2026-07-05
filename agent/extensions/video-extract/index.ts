@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import { execFile } from "node:child_process";
 import { existsSync, statSync, readdirSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { resolve, extname, basename, join, dirname } from "node:path";
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -254,7 +254,7 @@ function execFileAsync(
 		execFile(cmd, args, {
 			timeout: opts.timeout,
 			maxBuffer: opts.maxBuffer ?? 5 * 1024 * 1024,
-			encoding: opts.encoding === "utf-8" ? "utf-8" : "buffer" as any,
+			encoding: (opts.encoding === "utf-8" ? "utf-8" : "buffer") as any,
 		}, (err, stdout, stderr) => {
 			if (err) return reject(Object.assign(err, { stderr, stdout }));
 			resolve({ stdout: stdout ?? "", stderr: stderr ?? "" });
@@ -465,12 +465,15 @@ async function queryGeminiApiWithVideo(
 ): Promise<string> {
 
 	const model = options.model ?? DEFAULT_MODEL;
+	if (options.model && !/^[a-zA-Z0-9-_]+$/.test(options.model)) {
+		throw new Error("Invalid model name format");
+	}
 	const timeoutMs = options.timeoutMs ?? 120000;
 	const signal = options.signal
 		? AbortSignal.any([options.signal, AbortSignal.timeout(timeoutMs)])
 		: AbortSignal.timeout(timeoutMs);
 
-	const url = `${API_BASE}/models/${model}:generateContent?key=${apiKey}`;
+	const url = `${API_BASE}/models/${model}:generateContent`;
 	const fileData: Record<string, string> = { fileUri: videoUri };
 	if (options.mimeType) fileData.mimeType = options.mimeType;
 
@@ -480,7 +483,10 @@ async function queryGeminiApiWithVideo(
 
 	const res = await fetch(url, {
 		method: "POST",
-		headers: { "Content-Type": "application/json" },
+		headers: { 
+			"Content-Type": "application/json",
+			"x-goog-api-key": apiKey
+		},
 		body: JSON.stringify(body),
 		signal,
 	});
@@ -512,6 +518,11 @@ async function uploadToFilesApi(
 	apiKey: string,
 	signal?: AbortSignal,
 ): Promise<{ name: string; uri: string }> {
+	const currentStat = await stat(info.absolutePath);
+	const maxBytes = DEFAULT_MAX_SIZE_MB * 1024 * 1024;
+	if (currentStat.size > maxBytes) {
+		throw new Error(`File size ${currentStat.size} exceeds maximum allowed size of ${DEFAULT_MAX_SIZE_MB}MB.`);
+	}
 	const displayName = basename(info.absolutePath);
 
 	const initRes = await fetch(`${UPLOAD_BASE}/files`, {
@@ -520,7 +531,7 @@ async function uploadToFilesApi(
 			"x-goog-api-key": apiKey,
 			"X-Goog-Upload-Protocol": "resumable",
 			"X-Goog-Upload-Command": "start",
-			"X-Goog-Upload-Header-Content-Length": String(info.sizeBytes),
+			"X-Goog-Upload-Header-Content-Length": String(currentStat.size),
 			"X-Goog-Upload-Header-Content-Type": info.mimeType,
 			"Content-Type": "application/json",
 		},
@@ -542,7 +553,7 @@ async function uploadToFilesApi(
 	const uploadRes = await fetch(uploadUrl, {
 		method: "PUT",
 		headers: {
-			"Content-Length": String(info.sizeBytes),
+			"Content-Length": String(currentStat.size),
 			"X-Goog-Upload-Offset": "0",
 			"X-Goog-Upload-Command": "upload, finalize",
 		},
@@ -572,7 +583,8 @@ async function pollFileState(
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
 		if (signal?.aborted) throw new Error("Aborted");
-		const res = await fetch(`${API_BASE}/${fileName}?key=${apiKey}`, {
+		const res = await fetch(`${API_BASE}/${fileName}`, {
+			headers: { "x-goog-api-key": apiKey },
 			signal,
 		});
 		if (!res.ok) throw new Error(`File state check failed: ${res.status}`);
@@ -585,9 +597,10 @@ async function pollFileState(
 }
 
 function deleteGeminiFile(fileName: string, apiKey: string): void {
-	fetch(`${API_BASE}/${fileName}?key=${apiKey}`, { method: "DELETE" }).catch(
-		() => {},
-	);
+	fetch(`${API_BASE}/${fileName}`, {
+		method: "DELETE",
+		headers: { "x-goog-api-key": apiKey },
+	}).catch(() => {});
 }
 
 // ── YouTube Extraction ───────────────────────────────────────────────
@@ -598,7 +611,7 @@ async function extractYouTube(
 	signal?: AbortSignal,
 	prompt?: string,
 	model?: string,
-): Promise<ExtractedContent | null> {
+): Promise<ExtractedContent> {
 	const { videoId } = isYouTubeURL(url);
 	const canonicalUrl = videoId
 		? `https://www.youtube.com/watch?v=${videoId}`
@@ -607,7 +620,9 @@ async function extractYouTube(
 	const effectiveModel = model ?? DEFAULT_MODEL;
 
 	try {
-		if (signal?.aborted) return null;
+		if (signal?.aborted) {
+			return { url, title: "", content: "", error: "Aborted" };
+		}
 		const text = await queryGeminiApiWithVideo(
 			effectivePrompt,
 			canonicalUrl,
@@ -628,8 +643,13 @@ async function extractYouTube(
 		}
 
 		return result;
-	} catch {
-		return null;
+	} catch (err) {
+		return {
+			url,
+			title: "YouTube Video",
+			content: "",
+			error: errorMessage(err),
+		};
 	}
 }
 
@@ -640,13 +660,20 @@ async function extractVideo(
 	apiKey: string,
 	signal?: AbortSignal,
 	options?: { prompt?: string; model?: string },
-): Promise<ExtractedContent | null> {
+): Promise<ExtractedContent> {
 	const effectivePrompt = options?.prompt ?? VIDEO_PROMPT;
 	const effectiveModel = options?.model ?? DEFAULT_MODEL;
 
 	let fileName: string | null = null;
 	try {
-		if (signal?.aborted) return null;
+		if (signal?.aborted) {
+			return {
+				url: info.absolutePath,
+				title: basename(info.absolutePath, extname(info.absolutePath)),
+				content: "",
+				error: "Aborted",
+			};
+		}
 		const uploaded = await uploadToFilesApi(info, apiKey, signal);
 		fileName = uploaded.name;
 
@@ -674,8 +701,13 @@ async function extractVideo(
 		}
 
 		return result;
-	} catch {
-		return null;
+	} catch (err) {
+		return {
+			url: info.absolutePath,
+			title: basename(info.absolutePath, extname(info.absolutePath)),
+			content: "",
+			error: errorMessage(err),
+		};
 	} finally {
 		if (fileName) deleteGeminiFile(fileName, apiKey);
 	}
@@ -1083,23 +1115,10 @@ async function extractContent(
 		if (!apiKey) {
 			return { url, title: "", content: "", error: "Video analysis requires a Google API key. Configure it via /login or set GEMINI_API_KEY." };
 		}
-		try {
-			const result = await extractVideo(localVideo.info, apiKey, signal, options);
-			if (signal?.aborted)
-				return { url, title: "", content: "", error: "Aborted" };
-			return (
-				result ?? {
-					url,
-					title: "",
-					content: "",
-					error: "Video extraction returned no content.",
-				}
-			);
-		} catch (err) {
-			if (errorMessage(err).toLowerCase().includes("abort"))
-				return { url, title: "", content: "", error: "Aborted" };
-			return { url, title: "", content: "", error: errorMessage(err) };
-		}
+		const result = await extractVideo(localVideo.info, apiKey, signal, options);
+		if (signal?.aborted)
+			return { url, title: "", content: "", error: "Aborted" };
+		return result;
 	}
 
 	// YouTube
@@ -1108,27 +1127,16 @@ async function extractContent(
 		if (!apiKey) {
 			return { url, title: "", content: "", error: "YouTube analysis requires a Google API key. Configure it via /login or set GEMINI_API_KEY." };
 		}
-		try {
-			const ytResult = await extractYouTube(
-				url,
-				apiKey,
-				signal,
-				options?.prompt,
-				options?.model,
-			);
-			if (ytResult) return ytResult;
-			if (signal?.aborted)
-				return { url, title: "", content: "", error: "Aborted" };
-		} catch (err) {
-			if (errorMessage(err).toLowerCase().includes("abort"))
-				return { url, title: "", content: "", error: "Aborted" };
-		}
-		return {
+		const ytResult = await extractYouTube(
 			url,
-			title: "",
-			content: "",
-			error: "Could not extract YouTube video content.",
-		};
+			apiKey,
+			signal,
+			options?.prompt,
+			options?.model,
+		);
+		if (signal?.aborted)
+			return { url, title: "", content: "", error: "Aborted" };
+		return ytResult;
 	}
 
 	return {

@@ -545,22 +545,21 @@ export default function (pi: ExtensionAPI) {
       ) {
         const origUpdateDisplay = ToolExecutionComponent.prototype.updateDisplay;
         ToolExecutionComponent.prototype.updateDisplay = function () {
+          // Guard against result.content being undefined (crashes render-utils.js)
+          if (this.result && !Array.isArray(this.result.content)) {
+            this.result.content = [];
+          }
           // Shorten path for read/write/edit tools in non-expanded view
           if (PATH_TOOLS.has(this.toolName) && !this.expanded && this.args) {
-            const origPath = this.args.path || this.args.file || this.args.filePath || this.args.source;
+            const pathKey = this.args.path ? 'path' : this.args.file ? 'file' : this.args.filePath ? 'filePath' : this.args.source ? 'source' : null;
+            const origPath = pathKey ? this.args[pathKey] : null;
             if (origPath && typeof origPath === "string" && origPath.includes("/")) {
               // Temporarily modify args for rendering
               const shortened = shortenPath(this.toolName, origPath);
-              if (this.args.path) this.args.path = shortened;
-              if (this.args.file) this.args.file = shortened;
-              if (this.args.filePath) this.args.filePath = shortened;
-              if (this.args.source) this.args.source = shortened;
+              this.args[pathKey] = shortened;
               origUpdateDisplay.call(this);
               // Restore original args
-              if (this.args.path) this.args.path = origPath;
-              if (this.args.file) this.args.file = origPath;
-              if (this.args.filePath) this.args.filePath = origPath;
-              if (this.args.source) this.args.source = origPath;
+              this.args[pathKey] = origPath;
               return;
             }
           }

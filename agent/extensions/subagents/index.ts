@@ -183,7 +183,7 @@ const EXTENSIONS_DIR = path.resolve(EXT_DIR, "..");
 // should NOT be loaded into subagent child processes — they conflict with the
 // parent's own instances and waste resources. This list is intentionally small
 // and only blocks extensions that register global UI components on load.
-const EXTENSION_BLOCKLIST = new Set(["compactui", "statusline", "spinner", "header"]); 
+const EXTENSION_BLOCKLIST = new Set(["compactui", "statusline", "spinner", "header", "pi-hermes-memory"]); 
 
 let _extCache: { result: string[]; ts: number } | null = null;
 const CACHE_TTL_MS = 5 * 60 * 1000;

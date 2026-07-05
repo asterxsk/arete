@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { homedir } from "node:os"
 import { DEFAULT_ENDPOINT } from "./config.js"
@@ -140,11 +140,18 @@ export async function fetchAndCacheModels(endpoint?: string, apiKey?: string): P
 
   // Write cache
   mkdirSync(MODELS_CACHE_DIR, { recursive: true })
+  const tempPath = `${MODELS_CACHE_PATH}.tmp.${process.pid}`
   writeFileSync(
-    MODELS_CACHE_PATH,
+    tempPath,
     JSON.stringify({ updatedAt: new Date().toISOString(), models: reconciled }, null, 2),
     "utf-8"
   )
+  try {
+    renameSync(tempPath, MODELS_CACHE_PATH)
+  } catch (error) {
+    try { unlinkSync(tempPath) } catch {}
+    throw error;
+  }
 
   return reconciled
 }

@@ -42,7 +42,7 @@ Each subfolder is a self-contained pi extension. Pi auto-loads any `extensions/<
 
 ## Child DOX Index
 - `agentzero/` — `/init` command (create or audit AGENTS.md) and global AGENTS.md injection into system prompt
-- `artifacts/` — `create_artifact` tool (hidden from chat) + `/artifacts` command: save/browse standalone html/md artifacts, opening html in the default browser and md in a fullscreen reader
+- `artifacts/` — `create_artifact`, `scaffold_artifact`, `render_artifact`, `list_artifacts`, `delete_artifact`, and `check_artifact` tools + `/artifacts` command: save/browse standalone html/md artifacts, opening html in the default browser (with WSL support) and md in a fullscreen reader (with line numbers, arrow cursor selection, inline commenting, and review submission)
 - `compactui/` — Compact tool rendering, responsive wrapping, assistant time tracking footer, tagged thinking dimming, tool status dot, and auto-hide notifications (3s).
 - `context/` — `/context` overlay: token grid breakdown with per-category color-coded visualization
 - `ferment/` — Structured delivery framework (scope, phases, steps) for long-running agent tasks

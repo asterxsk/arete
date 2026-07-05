@@ -23,6 +23,7 @@ Provides a persistent todo list with overlay widget, slash command, and LLM-call
 - Overlay constructed lazily at first `session_start` with UI
 - `hideCompletedTasksFromPreviousTurn()` called on `agent_start`
 - i18n strings registered once at module init (soft optional peer dependency)
+- Auto-clear: when no active tasks remain (all completed, deleted, or empty), the state resets to empty automatically at `agent_end` and after replay on `session_start`/`session_compact`/`session_tree`. This prevents stale completed tasks from persisting across turns. The clear is in-memory only — session lifecycle handlers re-apply it after branch replay so the empty state survives compaction and session transitions.
 - Tool execution triggers overlay update via `tool_execution_end` event
 - Overlay indentation: task prefix is `"   └ "` (first line, └ at col 3) and `"     "` (continuation, text at col 5), and the overflow summary line also starts with `"   └"`. This aligns the `└` tree glyph one column after the first letter of the spinner phrase (the spinner occupies 2 columns, e.g. `"✻ "`), so the todo overlay sits under the phrase rather than under the spinner animation character
 

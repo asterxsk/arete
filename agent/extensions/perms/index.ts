@@ -38,6 +38,34 @@ export default function init(pi: ExtensionAPI) {
 		}
 	});
 
+	function togglePlanModeState(active: boolean) {
+		if (active === isPlanMode) return;
+		isPlanMode = active;
+		if (isPlanMode) {
+			if (typeof (pi as any).getActiveTools === 'function') {
+				const activeToolsObj = (pi as any).getActiveTools();
+				let isString = false;
+				if (activeToolsObj.length > 0 && typeof activeToolsObj[0] === 'string') isString = true;
+				
+				if (prePlanModeTools === null) {
+					prePlanModeTools = activeToolsObj;
+				}
+				const safeTools = activeToolsObj.filter((t: any) => {
+					const name = isString ? t : t.name;
+					return !writeTools.includes(name);
+				});
+				if (typeof (pi as any).setActiveTools === 'function') {
+					(pi as any).setActiveTools(safeTools);
+				}
+			}
+		} else {
+			if (prePlanModeTools && typeof (pi as any).setActiveTools === 'function') {
+				(pi as any).setActiveTools(prePlanModeTools);
+			}
+			prePlanModeTools = null;
+		}
+	}
+
 	// Register the /extensions command to toggle tools and permissions
 	if (typeof pi.registerCommand === 'function') {
 		pi.registerCommand("extensions", {
@@ -70,6 +98,7 @@ export default function init(pi: ExtensionAPI) {
 
 					await ctx.ui.custom((tui, theme, _keybindings, done) => {
 						const commit = (updatedExts: { name: string, isEnabled: boolean }[]) => {
+							const errors: string[] = [];
 							for (const ext of updatedExts) {
 								const indexPath = path.join(extsDir, ext.name, 'index.ts');
 								const disabledPath = path.join(extsDir, ext.name, 'index.ts.disabled');
@@ -79,9 +108,17 @@ export default function init(pi: ExtensionAPI) {
 									} else if (!ext.isEnabled && fs.existsSync(indexPath)) {
 										fs.renameSync(indexPath, disabledPath);
 									}
-								} catch (e) {}
+								} catch (e: any) {
+									errors.push(`${ext.name}: ${e.message}`);
+								}
 							}
-							ctx.ui.notify("Extensions updated. Restart required to apply changes fully.", "info");
+							if (ctx.hasUI) {
+								if (errors.length > 0) {
+									ctx.ui.notify(`Failed to update some extensions:\n${errors.join('\n')}`, "warning");
+								} else {
+									ctx.ui.notify("Extensions updated. Restart required to apply changes fully.", "info");
+								}
+							}
 						};
 						return new ExtensionUIComponent(tui, theme, done, exts, commit);
 					});
@@ -102,34 +139,15 @@ export default function init(pi: ExtensionAPI) {
 					return {};
 				}
 				
-				isPlanMode = !isPlanMode;
+				const newActive = !isPlanMode;
 				planInstructions = args.trim();
+				togglePlanModeState(newActive);
 				
 				if (isPlanMode) {
-					if (typeof (pi as any).getActiveTools === 'function') {
-						const activeToolsObj = (pi as any).getActiveTools();
-						// check if array of strings or objects
-						let isString = false;
-						if (activeToolsObj.length > 0 && typeof activeToolsObj[0] === 'string') isString = true;
-						
-						prePlanModeTools = activeToolsObj;
-						const safeTools = activeToolsObj.filter((t: any) => {
-							const name = isString ? t : t.name;
-							return !writeTools.includes(name);
-						});
-						if (typeof (pi as any).setActiveTools === 'function') {
-							(pi as any).setActiveTools(safeTools);
-						}
-					}
 					if (ctx.hasUI) ctx.ui.notify("Plan mode activated", "info");
 				} else {
-					if (prePlanModeTools && typeof (pi as any).setActiveTools === 'function') {
-						(pi as any).setActiveTools(prePlanModeTools);
-						prePlanModeTools = null;
-					}
 					if (ctx.hasUI) ctx.ui.notify("Plan mode deactivated", "info");
 					if (typeof (pi as any).sendUserMessage === 'function') {
-						// Only explicitly send the exit message to chat so the AI knows it was turned off
 						(pi as any).sendUserMessage("Exited plan mode. You may now implement the plan.", { deliverAs: 'user' });
 					}
 				}
@@ -148,28 +166,7 @@ export default function init(pi: ExtensionAPI) {
 			active: Type.Boolean({ description: "True to enter plan mode, false to exit." })
 		}),
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			isPlanMode = params.active;
-			if (isPlanMode) {
-				if (typeof (pi as any).getActiveTools === 'function') {
-					const activeToolsObj = (pi as any).getActiveTools();
-					let isString = false;
-					if (activeToolsObj.length > 0 && typeof activeToolsObj[0] === 'string') isString = true;
-					
-					prePlanModeTools = activeToolsObj;
-					const safeTools = activeToolsObj.filter((t: any) => {
-						const name = isString ? t : t.name;
-						return !writeTools.includes(name);
-					});
-					if (typeof (pi as any).setActiveTools === 'function') {
-						(pi as any).setActiveTools(safeTools);
-					}
-				}
-			} else {
-				if (prePlanModeTools && typeof (pi as any).setActiveTools === 'function') {
-					(pi as any).setActiveTools(prePlanModeTools);
-					prePlanModeTools = null;
-				}
-			}
+			togglePlanModeState(params.active);
 			
 			return {
 				content: [{ type: "text", text: params.active 
@@ -224,6 +221,9 @@ class ExtensionUIComponent {
 			this.done();
 			return;
 		}
+		if (this.exts.length === 0) {
+			return;
+		}
 		if (matchesKey(data, Key.up)) {
 			this.selectedIndex = Math.max(0, this.selectedIndex - 1);
 			if (this.selectedIndex < this.scrollOffset) {
@@ -243,9 +243,11 @@ class ExtensionUIComponent {
 			return;
 		}
 		if (data === " ") {
-			this.exts[this.selectedIndex].isEnabled = !this.exts[this.selectedIndex].isEnabled;
-			this.invalidate();
-			this.tui.requestRender();
+			if (this.selectedIndex >= 0 && this.selectedIndex < this.exts.length) {
+				this.exts[this.selectedIndex].isEnabled = !this.exts[this.selectedIndex].isEnabled;
+				this.invalidate();
+				this.tui.requestRender();
+			}
 			return;
 		}
 		if (matchesKey(data, Key.enter)) {

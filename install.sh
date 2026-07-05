@@ -69,4 +69,15 @@ if [ -f "$HERMES_DIR/package.json" ]; then
     fi
 fi
 
+# artifacts extension needs markdown-it, katex, prettier, htmlhint, chart.js, @picocss/pico
+ARTIFACTS_DIR="$HOME/.pi/agent/extensions/artifacts"
+if [ -f "$ARTIFACTS_DIR/package.json" ]; then
+    if [ -d "$ARTIFACTS_DIR/node_modules" ]; then
+        echo -e "\033[1;37m  artifacts dependencies already installed, skipping...\033[0m"
+    else
+        echo -e "\033[1;37m  Installing dependencies for artifacts...\033[0m"
+        (cd "$ARTIFACTS_DIR" && npm install --production)
+    fi
+fi
+
 echo -e "\033[1;38;5;208mArete installed successfully! Please restart Pi to apply changes.\033[0m"

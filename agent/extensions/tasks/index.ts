@@ -413,6 +413,23 @@ export default function (pi: ExtensionAPI) {
 		tools: ["manage_task", "run_command"],
 	});
 
+	const onProcessExit = () => {
+		for (const t of tasks) {
+			if (t.status === "running" && t.proc && !t.proc.killed) {
+				try {
+					t.proc.kill("SIGKILL");
+				} catch {}
+			}
+		}
+	};
+	process.on("exit", onProcessExit);
+	
+	const sigIntHandler = () => { onProcessExit(); process.exit(130); };
+	const sigTermHandler = () => { onProcessExit(); process.exit(143); };
+	
+	process.on("SIGINT", sigIntHandler);
+	process.on("SIGTERM", sigTermHandler);
+
 	pi.on("session_start", async (_event, ctx) => {
 		restoreState();
 		if (ctx.hasUI) refreshWidget(ctx);
@@ -426,6 +443,9 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 		persistState();
+		process.off("exit", onProcessExit);
+		process.off("SIGINT", sigIntHandler);
+		process.off("SIGTERM", sigTermHandler);
 	});
 
 	// ── /task command (user-facing) ─────────────────────────────────────

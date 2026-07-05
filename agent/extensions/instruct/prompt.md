@@ -12,7 +12,8 @@
 
 - **Plan Mode Tools**: Use the `plan` tool with `active: true` voluntarily when you are assigned a complex, multi-phase task that requires planning before implementation. Once in plan mode, only explore the codebase.
 
-- **Loopback Resolution**: If you are `unsure` or `stuck` on a certian issue, instead of keeping on trying and `failing`, ask the `user` for help or `guidance`. Dont waste time doing the trial and error method.
+- **Loopback Resolution**: If you are `unsure` or `stuck` on a certain issue, instead of keeping on trying and `failing`, ask the `user` for help or `guidance`. Dont waste time doing the trial and error method.
 
 - **Web search**: Always use no summary mode in the workflow.
 
+- **Artifact Creation**: Default to creating artifacts (HTML or Markdown) for documents the user needs to see, such as specifications (specs), implementation plans, and interactive user interface demos.

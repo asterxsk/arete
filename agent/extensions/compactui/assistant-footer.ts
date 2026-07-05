@@ -42,9 +42,11 @@ export function initAssistantFooter(pi: ExtensionAPI): void {
     if (turnStartMs === undefined) return;
 
     const durationMs = Date.now() - turnStartMs;
-    const textBlocks = message.content?.filter(
-      (b: any) => b?.type === "text" && typeof b.text === "string"
-    );
+    const textBlocks = Array.isArray(message.content)
+      ? message.content.filter(
+          (b: any) => b?.type === "text" && typeof b.text === "string"
+        )
+      : undefined;
     const last = textBlocks?.[textBlocks.length - 1];
     if (last) {
       let text = last.text;

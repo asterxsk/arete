@@ -22,7 +22,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { I18N_NAMESPACE } from "./state/i18n-bridge.js";
 import { replayFromBranch } from "./state/replay.js";
-import { replaceState } from "./state/store.js";
+import { EMPTY_STATE } from "./state/state.js";
+import { getState, replaceState } from "./state/store.js";
 import { registerTodosCommand, registerTodoTool, TOOL_NAME } from "./todo.js";
 import { TodoOverlay } from "./todo-overlay.js";
 
@@ -55,11 +56,29 @@ export default function (pi: ExtensionAPI) {
 	// Todo overlay widget — constructed lazily at the first session_start with UI.
 	let todoOverlay: TodoOverlay | undefined;
 
+	/**
+	 * If no active tasks remain (all completed, deleted, or empty), reset the
+	 * state to empty. Called at agent_end and after replay on session lifecycle
+	 * events so stale completed tasks don't persist across turns.
+	 *
+	 * Note: clearing is in-memory only (no tool result written to the branch).
+	 * Session lifecycle handlers re-check on replay so the empty state survives
+	 * compaction and session transitions. If a future pi-core ordering change
+	 * skips those lifecycle events, completed tasks would reappear.
+	 */
+	function autoClearIfNoActiveTasks(): void {
+		const state = getState();
+		if (!state.tasks.some((t) => t.status === "pending" || t.status === "in_progress")) {
+			replaceState(EMPTY_STATE);
+		}
+	}
+
 	registerTodoTool(pi);
 	registerTodosCommand(pi);
 
 	pi.on("session_start", async (_event, ctx) => {
 		replaceState(replayFromBranch(ctx));
+		autoClearIfNoActiveTasks();
 		if (ctx.hasUI) {
 			todoOverlay ??= new TodoOverlay();
 			todoOverlay.setUICtx(ctx.ui);
@@ -80,6 +99,7 @@ export default function (pi: ExtensionAPI) {
 		} catch (e) {
 			if (!isStaleCtxError(e)) throw e;
 		}
+		autoClearIfNoActiveTasks();
 		todoOverlay?.resetCompletedDisplayState();
 		todoOverlay?.update();
 	});
@@ -90,6 +110,7 @@ export default function (pi: ExtensionAPI) {
 		} catch (e) {
 			if (!isStaleCtxError(e)) throw e;
 		}
+		autoClearIfNoActiveTasks();
 		todoOverlay?.resetCompletedDisplayState();
 		todoOverlay?.update();
 	});
@@ -111,7 +132,12 @@ export default function (pi: ExtensionAPI) {
 		todoOverlay?.onAgentTurnStart();
 	});
 
+	// Run auto-clear BEFORE onAgentTurnEnd so the overlay's completed-tracking
+	// sets (pendingHide, hiddenCompleted) are still valid for any future logic
+	// in onAgentTurnEnd that references them. The overlay resets its display
+	// state separately at session lifecycle boundaries.
 	pi.on("agent_end", async () => {
+		autoClearIfNoActiveTasks();
 		todoOverlay?.onAgentTurnEnd();
 	});
 }

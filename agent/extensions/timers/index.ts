@@ -340,6 +340,11 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", () => {
+		for (const t of timers) {
+			if (t.timeoutId) clearTimeout(t.timeoutId);
+			if (t.intervalId) clearInterval(t.intervalId);
+		}
+		timers = [];
 		persistState();
 	});
 

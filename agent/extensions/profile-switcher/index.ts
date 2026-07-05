@@ -62,8 +62,16 @@ function readAuthFile(): AuthFile {
 }
 
 function writeAuthFile(data: AuthFile): void {
-	fs.mkdirSync(path.dirname(AUTH_PATH), { recursive: true });
-	fs.writeFileSync(AUTH_PATH, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+	const dir = path.dirname(AUTH_PATH);
+	fs.mkdirSync(dir, { recursive: true });
+	const tempPath = `${AUTH_PATH}.tmp.${process.pid}`;
+	fs.writeFileSync(tempPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+	try {
+		fs.renameSync(tempPath, AUTH_PATH);
+	} catch (error) {
+		try { fs.unlinkSync(tempPath); } catch {}
+		throw error;
+	}
 }
 
 function getTopLevelCredential(data: AuthFile, provider: string): StoredCredential | undefined {

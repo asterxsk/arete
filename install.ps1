@@ -75,4 +75,17 @@ if (Test-Path "$hermesDir\package.json") {
     }
 }
 
+# artifacts extension needs markdown-it, katex, prettier, htmlhint, chart.js, @picocss/pico
+$artifactsDir = "$HOME\.pi\agent\extensions\artifacts"
+if (Test-Path "$artifactsDir\package.json") {
+    if (Test-Path "$artifactsDir\node_modules") {
+        Write-Host "${esc}[1;37m  artifacts dependencies already installed, skipping...${esc}[0m"
+    } else {
+        Write-Host "${esc}[1;37m  Installing dependencies for artifacts...${esc}[0m"
+        Push-Location $artifactsDir
+        npm install --production
+        Pop-Location
+    }
+}
+
 Write-Host "${esc}[1;38;5;208mArete installed successfully! Please restart Pi to apply changes.${esc}[0m"
