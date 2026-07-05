@@ -1,0 +1,6 @@
+# Ignore node_modules inside artifacts
+node_modules/
+
+# Ignore build/dist outputs (if any)
+*.js.map
+*.d.ts.map
