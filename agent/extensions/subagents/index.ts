@@ -11,10 +11,34 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { createRequire } from "node:module";
 import type { ExtensionAPI, ExtensionContext, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { parseFrontmatter, truncateHead, withFileMutationQueue, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { Input, Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
+
+// Guard npm deps that support CJS require() so a missing/uninstalled dependency degrades
+// this extension gracefully instead of crashing pi (see agent/extensions/AGENTS.md "NPM dep
+// safety"). @earendil-works/pi-coding-agent is intentionally NOT guarded here — it's
+// ESM-only (no CJS `exports` entry, confirmed via require()) so it can't be lazily required,
+// and it's the host SDK itself: if it's missing, pi isn't running at all, so there's nothing
+// to degrade.
+const _require = createRequire(import.meta.url);
+let Input: typeof import("@earendil-works/pi-tui").Input;
+let Key: typeof import("@earendil-works/pi-tui").Key;
+let matchesKey: typeof import("@earendil-works/pi-tui").matchesKey;
+let truncateToWidth: typeof import("@earendil-works/pi-tui").truncateToWidth;
+let Type: typeof import("typebox").Type;
+let depsOk = true;
+try {
+	({ Input, Key, matchesKey, truncateToWidth } = _require("@earendil-works/pi-tui"));
+	({ Type } = _require("typebox"));
+} catch (err) {
+	depsOk = false;
+	console.warn(
+		"[subagents] Missing npm dep(s) (@earendil-works/pi-tui or typebox). Run `npm install` in agent/extensions/subagents/. Subagents extension disabled.",
+		(err as Error).message,
+	);
+}
 
 // ── Self-contained CompactToolBox + emptyComponent (no dependency on betterui) ──
 interface _CBOpts {
@@ -76,7 +100,6 @@ class CompactToolBox implements Component {
 }
 
 const emptyComponent = { render: () => [] as string[], invalidate() {}, handleInput() {} };
-import { Type } from "typebox";
 
 // ── Subagent Model Storage ──────────────────────────────────────────────
 // Stored globally so the /sub command and the subagent tool share state.
@@ -93,12 +116,16 @@ function setSubagentModel(model: string): void {
 
 // ── Types ──────────────────────────────────────────────────────────────
 
+export type SessionMode = "standalone" | "fork" | "lineage";
+
 export interface AgentConfig {
 	name: string;
 	description: string;
 	tools: string[];
 	systemPrompt: string;
 	filePath: string;
+	interactive: boolean;
+	session: SessionMode;
 }
 
 interface ToolEvent {
@@ -127,6 +154,7 @@ interface AgentResult {
 	exitCode: number;
 	progress: AgentProgress;
 	model?: string;
+	sessionComplete: boolean;
 	usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; turns: number };
 }
 
@@ -169,9 +197,22 @@ function loadConfig(): ExtensionConfig {
 // Built-in tools that pi provides natively (no extension needed)
 const BUILTIN_TOOLS = new Set(["read", "write", "edit", "bash", "grep", "find", "ls"]);
 
+// How many levels deep this process is nested inside subagent spawns (0 = a real user
+// session; the env var is set on the child's process.env by runSubagent, one level up
+// per spawn). Interactive agents like `planner` delegate to `scout`/`researcher` mid-session
+// (see agents/planner.md's Delegation section), which requires those children to ALSO have
+// the `subagent` tool registered — but granting it unconditionally would let every level
+// re-delegate forever. MAX_SUBAGENT_DEPTH bounds it: a depth-0 session may spawn agents that
+// can themselves delegate one further level (depth 1 -> depth 2), and depth-2 agents get no
+// `subagent` tool at all, so recursion always terminates.
+const SUBAGENT_DEPTH = Number(process.env.PI_SUBAGENT_DEPTH) || 0;
+const MAX_SUBAGENT_DEPTH = 1;
+const CHILDREN_CAN_SELF_DELEGATE = SUBAGENT_DEPTH + 1 <= MAX_SUBAGENT_DEPTH;
+
 // Subagent-specific tools that live in the tools/ directory (not shared extensions).
 const SUBAGENT_TOOLS: Record<string, string> = {
 	safe_bash: path.join(TOOLS_DIR, "safe-bash.ts"),
+	session_complete: path.join(TOOLS_DIR, "session-complete.ts"),
 };
 
 // Dynamically discover all extensions from agent/extensions/.
@@ -216,8 +257,9 @@ async function discoverAllExtensions(): Promise<string[]> {
 		}
 		if (!stat.isDirectory()) continue;
 
-		// Skip subagents itself to avoid recursion
-		if (entry === "subagents") continue;
+		// Only include ourselves in a child's extension list if this process is shallow
+		// enough to let that child self-delegate one more level (see CHILDREN_CAN_SELF_DELEGATE).
+		if (entry === "subagents" && !CHILDREN_CAN_SELF_DELEGATE) continue;
 
 		// Only load extensions that have an index.ts or index.js file
 		const candidates = ["index.ts", "index.js"];
@@ -259,7 +301,7 @@ export function unregisterAgent(name: string): void {
 // (which creates separate module instances) can access the shared agents array.
 (globalThis as any).__pi_subagents = { registerAgent, unregisterAgent };
 
-function loadAgentFiles(agentDir: string, existingNames: Set<string>): AgentConfig[] {
+export function loadAgentFiles(agentDir: string, existingNames: Set<string>): AgentConfig[] {
 	const agents: AgentConfig[] = [];
 	if (!fs.existsSync(agentDir)) return agents;
 	for (const entry of fs.readdirSync(agentDir)) {
@@ -273,12 +315,21 @@ function loadAgentFiles(agentDir: string, existingNames: Set<string>): AgentConf
 			.split(",")
 			.map((t) => t.trim())
 			.filter(Boolean);
+		// parseFrontmatter uses the `yaml` package, which coerces bare `true`/`false`
+		// tokens into real booleans (not strings) — accept either representation.
+		const interactive = frontmatter.interactive === "true" || (frontmatter.interactive as unknown) === true;
+		const session: SessionMode =
+			frontmatter.session === "fork" || frontmatter.session === "lineage"
+				? frontmatter.session
+				: "standalone";
 		agents.push({
 			name: frontmatter.name,
 			description: frontmatter.description || "",
 			tools,
 			systemPrompt: body,
 			filePath,
+			interactive,
+			session,
 		});
 		existingNames.add(frontmatter.name);
 	}
@@ -341,14 +392,38 @@ function resolveSubagentModel(parentModel: string | undefined): string {
 
 // ── Subagent Execution ────────────────────────────────────────────────
 
+export interface SessionOptions {
+	mode: SessionMode;
+	tempDir: string;
+	resume: boolean;
+	parentSessionFile?: string;
+}
+
+// Every job gets its own private session, scoped to its per-job tempDir via a fixed
+// session id ("job") — uniqueness comes from the directory, not the id string. "fork"
+// only applies on first launch (a resumed job just reopens the same session, never
+// re-forks). If fork mode has no parent session file to fork from, it silently
+// degrades to standalone args rather than failing the job.
+export function buildSessionCliArgs(opts: SessionOptions): string[] {
+	const args: string[] = [];
+	if (opts.mode === "fork" && !opts.resume && opts.parentSessionFile) {
+		args.push("--fork", opts.parentSessionFile);
+	}
+	args.push("--session-dir", opts.tempDir, "--session-id", "job");
+	return args;
+}
+
 async function buildPiArgs(
 	agent: AgentConfig,
 	task: string,
 	cwd: string,
 	model: string,
+	sessionOpts: SessionOptions,
+	promptPrefix: string,
 ): Promise<{ args: string[]; tempDir: string }> {
 	const piBin = resolvePiBinary();
-	const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-sub-"));
+	const tempDir = sessionOpts.tempDir;
+	await fs.promises.mkdir(tempDir, { recursive: true });
 
 	// Write system prompt to temp file
 	const promptPath = path.join(tempDir, `${agent.name}.md`);
@@ -356,7 +431,11 @@ async function buildPiArgs(
 		await fs.promises.writeFile(promptPath, agent.systemPrompt, { encoding: "utf-8", mode: 0o600 });
 	});
 
-	const args = [...piBin.baseArgs, "--mode", "json", "-p", "--no-session", "--no-skills"];
+	const args = [...piBin.baseArgs, "--mode", "json", "-p", "--no-skills"];
+
+	// Session persistence: every job gets a private session scoped to its own tempDir,
+	// so interrupt/resume can reopen it later. Replaces the old --no-session (ephemeral) run.
+	args.push(...buildSessionCliArgs(sessionOpts));
 
 	// --no-extensions disables default auto-loading; we add all extensions back explicitly
 	args.push("--no-extensions");
@@ -393,14 +472,15 @@ async function buildPiArgs(
 
 	// Handle long tasks by writing to file
 	const TASK_LIMIT = 8000;
-	if (task.length > TASK_LIMIT) {
+	const fullPrompt = `${promptPrefix}${task}`;
+	if (fullPrompt.length > TASK_LIMIT) {
 		const taskPath = path.join(tempDir, "task.md");
 		await withFileMutationQueue(taskPath, async () => {
-			await fs.promises.writeFile(taskPath, `Task: ${task}`, { encoding: "utf-8", mode: 0o600 });
+			await fs.promises.writeFile(taskPath, fullPrompt, { encoding: "utf-8", mode: 0o600 });
 		});
 		args.push(`@${taskPath}`);
 	} else {
-		args.push(`Task: ${task}`);
+		args.push(fullPrompt);
 	}
 
 	return { args: [piBin.command, ...args], tempDir };
@@ -434,9 +514,11 @@ async function runSubagent(
 	cwd: string,
 	model: string,
 	signal: AbortSignal | undefined,
+	sessionOpts: SessionOptions,
+	promptPrefix: string,
 	onUpdate?: (progress: AgentProgress) => void,
-): Promise<AgentResult> {
-	const { args, tempDir } = await buildPiArgs(agent, task, cwd, model);
+): Promise<AgentResult & { tempDir: string }> {
+	const { args, tempDir } = await buildPiArgs(agent, task, cwd, model, sessionOpts, promptPrefix);
 	const command = args[0];
 	const spawnArgs = args.slice(1);
 
@@ -446,6 +528,7 @@ async function runSubagent(
 		output: "",
 		exitCode: 0,
 		model,
+		sessionComplete: false,
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 		progress: {
 			agent: agent.name,
@@ -474,6 +557,7 @@ async function runSubagent(
 		const proc = spawn(command, spawnArgs, {
 			cwd,
 			stdio: ["ignore", "pipe", "pipe"],
+			env: { ...process.env, PI_SUBAGENT_DEPTH: String(SUBAGENT_DEPTH + 1) },
 		});
 
 		let buf = "";
@@ -489,6 +573,7 @@ async function runSubagent(
 					progress.toolCount++;
 					progress.currentTool = evt.toolName;
 					progress.currentToolArgs = extractToolArgsPreview((evt.args || {}) as Record<string, unknown>);
+					if (evt.toolName === "session_complete") result.sessionComplete = true;
 					fireUpdate();
 				}
 
@@ -588,11 +673,6 @@ async function runSubagent(
 
 	// Timer interval cleared
 
-	// Cleanup temp dir
-	try {
-		fs.rmSync(tempDir, { recursive: true, force: true });
-	} catch {}
-
 	result.exitCode = exitCode;
 	progress.status = exitCode === 0 && !progress.error ? "completed" : "failed";
 	progress.durationMs = Date.now() - startTime;
@@ -607,7 +687,7 @@ async function runSubagent(
 		}
 	}
 
-	return result;
+	return { ...result, tempDir };
 }
 
 // ── Throttle ──────────────────────────────────────────────────────────
@@ -660,7 +740,7 @@ async function mapConcurrent<T, R>(
 // parallel jobs) finishes, the agent is pinged via a follow-up user message
 // carrying the full output. Modeled on the tasks extension.
 
-type JobStatus = "running" | "completed" | "failed";
+type JobStatus = "running" | "completed" | "failed" | "waiting" | "interrupted";
 
 interface SubagentJob {
 	id: number;
@@ -672,6 +752,11 @@ interface SubagentJob {
 	completedAt?: number;
 	controller: AbortController;
 	result?: AgentResult;
+	cwd: string;
+	tempDir: string;
+	sessionMode: SessionMode;
+	parentSessionId?: string;
+	interruptRequested: boolean;
 }
 
 let jobs: SubagentJob[] = [];
@@ -739,7 +824,7 @@ function sendBatchPing(batchJobs: SubagentJob[], hasUI: boolean, ctx: ExtensionC
 
 	if (piApi?.sendUserMessage) {
 		try {
-			const res = piApi.sendUserMessage(msg, { deliverAs: "followUp" }) as unknown;
+			const res = piApi.sendUserMessage(msg, { deliverAs: "steer" }) as unknown;
 			if (res && typeof (res as Promise<void>).then === "function") {
 				(res as Promise<void>).catch(() => {});
 			}
@@ -748,14 +833,70 @@ function sendBatchPing(batchJobs: SubagentJob[], hasUI: boolean, ctx: ExtensionC
 
 	if (hasUI) {
 		try {
-			ctx.ui.notify?.(`Subagent ${ok}/${batchJobs.length} job(s) finished (${ids})`, ok === batchJobs.length ? "info" : "warning");
+			// A transient widget (not ctx.ui.notify) because notify() permanently appends to the
+			// chat transcript — this ping is redundant once the full output has already arrived
+			// via sendUserMessage above, so it should disappear on its own rather than linger.
+			const widgetKey = `subagent-ping-${batchJobs[0].id}-${Date.now()}`;
+			ctx.ui.setWidget?.(widgetKey, [`Subagent ${ok}/${batchJobs.length} job(s) finished (${ids})`]);
+			setTimeout(() => {
+				try {
+					ctx.ui.setWidget?.(widgetKey, undefined);
+				} catch {}
+			}, 3000);
+		} catch {}
+	}
+}
+
+// Given a completed run and the job/agent state, decide the job's next status.
+// Shared by first launch and resume so the two paths can never drift apart.
+function resolveJobStatus(
+	job: SubagentJob,
+	agent: AgentConfig,
+	result: Pick<AgentResult, "exitCode" | "progress" | "sessionComplete">,
+): JobStatus {
+	if (job.interruptRequested) return "interrupted";
+	if (result.exitCode === 0 && !result.progress.error) {
+		return agent.interactive && !result.sessionComplete ? "waiting" : "completed";
+	}
+	return "failed";
+}
+
+function makeErrorResult(agent: string, task: string, model: string, message: string, startedAt: number): AgentResult {
+	return {
+		agent,
+		task,
+		output: `Error: ${message}`,
+		exitCode: 1,
+		model,
+		sessionComplete: false,
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+		progress: {
+			agent,
+			status: "failed",
+			task,
+			recentTools: [],
+			toolCount: 0,
+			tokens: 0,
+			durationMs: Date.now() - startedAt,
+			lastMessage: "",
+			error: message,
+		},
+	};
+}
+
+// Session files for waiting/interrupted jobs must survive — they're the whole point
+// of resume. Only completed/failed jobs get their tempDir removed.
+function cleanupIfTerminal(job: SubagentJob): void {
+	if (job.status === "completed" || job.status === "failed") {
+		try {
+			fs.rmSync(job.tempDir, { recursive: true, force: true });
 		} catch {}
 	}
 }
 
 // Launch a batch of jobs detached. Returns the job records immediately.
 function launchBatch(
-	entries: { agent: AgentConfig; task: string; cwd: string }[],
+	entries: { agent: AgentConfig; task: string; cwd: string; sessionOpts: SessionOptions }[],
 	model: string,
 	hasUI: boolean,
 	ctx: ExtensionContext,
@@ -770,6 +911,11 @@ function launchBatch(
 			status: "running",
 			startedAt: Date.now(),
 			controller: new AbortController(),
+			cwd: e.cwd,
+			tempDir: e.sessionOpts.tempDir,
+			sessionMode: e.sessionOpts.mode,
+			parentSessionId: e.sessionOpts.mode === "lineage" ? ctx.sessionManager.getSessionId() : undefined,
+			interruptRequested: false,
 		};
 		jobs.push(job);
 		incRunningCount();
@@ -783,35 +929,26 @@ function launchBatch(
 		void (async () => {
 			await acquireSlot();
 			try {
-				const result = await runSubagent(entry.agent, entry.task, entry.cwd, model, job.controller.signal);
+				const result = await runSubagent(
+					entry.agent,
+					entry.task,
+					entry.cwd,
+					model,
+					job.controller.signal,
+					entry.sessionOpts,
+					"Task: ",
+				);
 				job.result = result;
-				job.status = result.exitCode === 0 && !result.progress.error ? "completed" : "failed";
+				job.status = resolveJobStatus(job, entry.agent, result);
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
-				job.status = "failed";
-				job.result = {
-					agent: job.agent,
-					task: job.task,
-					output: `Error: ${message}`,
-					exitCode: 1,
-					model,
-					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
-					progress: {
-						agent: job.agent,
-						status: "failed",
-						task: job.task,
-						recentTools: [],
-						toolCount: 0,
-						tokens: 0,
-						durationMs: Date.now() - job.startedAt,
-						lastMessage: "",
-						error: message,
-					},
-				};
+				job.status = job.interruptRequested ? "interrupted" : "failed";
+				job.result = makeErrorResult(job.agent, job.task, model, message, job.startedAt);
 			} finally {
 				job.completedAt = Date.now();
 				releaseSlot();
 				decRunningCount();
+				cleanupIfTerminal(job);
 			}
 
 			remaining--;
@@ -821,6 +958,68 @@ function launchBatch(
 
 	trimJobs();
 	return batchJobs;
+}
+
+// Resume a waiting/interrupted job: reopens its persisted session (same tempDir, same
+// "job" session id, no --fork) and sends `replyText` as the next prompt. Runs through
+// the same concurrency gate as a fresh launch.
+async function resumeJob(
+	job: SubagentJob,
+	replyText: string,
+	hasUI: boolean,
+	ctx: ExtensionContext,
+	model: string,
+): Promise<void> {
+	const agent = agents.find((a) => a.name === job.agent);
+	if (!agent) throw new Error(`Agent no longer available: ${job.agent}`);
+
+	job.status = "running";
+	job.interruptRequested = false;
+	job.controller = new AbortController();
+	incRunningCount();
+
+	try {
+		await acquireSlot();
+		try {
+			const result = await runSubagent(
+				agent,
+				replyText,
+				job.cwd,
+				model,
+				job.controller.signal,
+				{ mode: job.sessionMode, resume: true, tempDir: job.tempDir },
+				"",
+			);
+			job.result = result;
+			job.status = resolveJobStatus(job, agent, result);
+		} finally {
+			releaseSlot();
+		}
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		job.status = job.interruptRequested ? "interrupted" : "failed";
+		job.result = makeErrorResult(job.agent, replyText, model, message, job.startedAt);
+	} finally {
+		job.completedAt = Date.now();
+		decRunningCount();
+		cleanupIfTerminal(job);
+	}
+
+	sendBatchPing([job], hasUI, ctx);
+}
+
+// Cancel a running job's current turn. The session is left on disk (tempDir untouched)
+// so a subsequent resumeJob can reopen it.
+function interruptJob(job: SubagentJob): { ok: boolean; message: string } {
+	if (job.status !== "running") {
+		return { ok: false, message: `Job #${job.id} is not running (status: ${job.status}).` };
+	}
+	job.interruptRequested = true;
+	job.controller.abort();
+	return {
+		ok: true,
+		message: `Interrupt sent to job #${job.id}. Session preserved — resume with subagent_resume once it stops.`,
+	};
 }
 
 // ── Load known models for autocomplete suggestions ───────────────────
@@ -885,7 +1084,7 @@ function loadSuggestions(modelRegistry?: ModelRegistry): string[] {
 const MAX_VISIBLE_SUGGESTIONS = 8;
 
 class SubagentAutocompleteComponent {
-	private readonly input: Input;
+	private readonly input: InstanceType<typeof Input>;
 	private readonly allModels: string[];
 	private filtered: string[] = [];
 	private selectedIdx = 0;
@@ -1032,9 +1231,53 @@ class SubagentAutocompleteComponent {
 	}
 }
 
+// Read-only live tail of a job's progress — no PTY, no raw takeover. Polls the
+// already-updating `job.progress` object and re-renders; any keypress stops watching
+// (the job itself keeps running in the background regardless).
+async function watchJob(job: SubagentJob, ctx: ExtensionContext): Promise<void> {
+	await ctx.ui.custom<null>((tui, theme, _kb, done) => {
+		const interval = setInterval(() => {
+			tui.requestRender();
+			if (job.status !== "running") clearInterval(interval);
+		}, 300);
+
+		return {
+			render(width: number): string[] {
+				const p = job.progress;
+				const lines = [
+					theme.fg("accent", theme.bold(`Watching job #${job.id} (${job.agent}) — ${job.status}`)),
+					"",
+					p.currentTool ? `▸ ${p.currentTool} ${p.currentToolArgs || ""}` : p.lastMessage || "(no activity yet)",
+					"",
+					...p.recentTools.slice(-5).map((t) => `  ${t.tool}: ${t.args}`),
+					"",
+					theme.fg("dim", "Press any key to stop watching (job keeps running in background)"),
+				];
+				return lines.map((l) => truncateToWidth(l, width));
+			},
+			invalidate() {},
+			handleInput(_data: string) {
+				clearInterval(interval);
+				done(null);
+			},
+		};
+	});
+}
+
 // ── Extension ─────────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
+	if (!depsOk) {
+		(globalThis as any).__pi_extension_features?.push({
+			name: "subagents",
+			description: "DISABLED — missing npm dep(s) (@earendil-works/pi-tui or typebox). Run `npm install` in agent/extensions/subagents/.",
+			status: "disabled",
+			tools: [],
+			commands: [],
+		});
+		return;
+	}
+
 	// Capture the API so detached background jobs can ping the agent on completion.
 	piApi = pi;
 
@@ -1042,7 +1285,7 @@ export default function (pi: ExtensionAPI) {
 	(globalThis as any).__pi_extension_features?.push({
 		name: "subagents",
 		description: "Run isolated child pi processes in the background; results are delivered as a follow-up message when each finishes",
-		tools: ["subagent"],
+		tools: ["subagent", "subagent_resume", "subagent_interrupt"],
 		commands: ["/sub", "/jobs"],
 	});
 
@@ -1111,12 +1354,60 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// ── Command: /jobs ───────────────────────────────
-	// List background subagent jobs, or `/jobs <id>` to show one job's output.
+	// List background subagent jobs, `/jobs <id>` for full output, `/jobs interrupt <id>`,
+	// `/jobs reply <id> <text>`, `/jobs watch <id>`.
 	pi.registerCommand("jobs", {
-		description: "List background subagent jobs and their status. /jobs <id> shows a job's full output.",
+		description:
+			"List background subagent jobs. /jobs <id> full output · /jobs interrupt <id> · /jobs reply <id> <text> · /jobs watch <id>",
 		handler: async (_args, ctx) => {
-			const arg = (typeof _args === "string" ? _args : "").trim().replace(/^#/, "");
+			const raw = (typeof _args === "string" ? _args : "").trim();
 
+			const interruptMatch = raw.match(/^interrupt\s+#?(\d+)$/i);
+			if (interruptMatch) {
+				const job = jobs.find((j) => j.id === parseInt(interruptMatch[1], 10));
+				if (!job) {
+					ctx.ui.notify?.(`No subagent job #${interruptMatch[1]}.`, "warning");
+					return;
+				}
+				const result = interruptJob(job);
+				ctx.ui.notify?.(result.message, result.ok ? "success" : "error");
+				return;
+			}
+
+			const replyMatch = raw.match(/^reply\s+#?(\d+)\s+([\s\S]+)$/i);
+			if (replyMatch) {
+				const job = jobs.find((j) => j.id === parseInt(replyMatch[1], 10));
+				if (!job) {
+					ctx.ui.notify?.(`No subagent job #${replyMatch[1]}.`, "warning");
+					return;
+				}
+				if (job.status !== "waiting" && job.status !== "interrupted") {
+					ctx.ui.notify?.(`Job #${job.id} is not resumable (status: ${job.status}).`, "warning");
+					return;
+				}
+				const parentModel = ctx.model ? `${(ctx.model as any).provider}/${ctx.model.id}` : undefined;
+				const model = resolveSubagentModel(parentModel);
+				void resumeJob(job, replyMatch[2], ctx.hasUI, ctx as unknown as ExtensionContext, model);
+				ctx.ui.notify?.(`Resuming job #${job.id}...`, "info");
+				return;
+			}
+
+			const watchMatch = raw.match(/^watch\s+#?(\d+)$/i);
+			if (watchMatch) {
+				const job = jobs.find((j) => j.id === parseInt(watchMatch[1], 10));
+				if (!job) {
+					ctx.ui.notify?.(`No subagent job #${watchMatch[1]}.`, "warning");
+					return;
+				}
+				if (!ctx.hasUI) {
+					ctx.ui.notify?.("Watch requires an interactive terminal.", "warning");
+					return;
+				}
+				await watchJob(job, ctx as unknown as ExtensionContext);
+				return;
+			}
+
+			const arg = raw.replace(/^#/, "");
 			if (arg) {
 				const id = parseInt(arg, 10);
 				const job = Number.isNaN(id) ? undefined : jobs.find((j) => j.id === id);
@@ -1137,10 +1428,12 @@ export default function (pi: ExtensionAPI) {
 
 			const running = jobs.filter((j) => j.status === "running").length;
 			const lines = jobs.slice(-20).map((j) => {
-				const icon = j.status === "completed" ? "✓" : j.status === "failed" ? "✗" : "⟳";
+				const icon =
+					j.status === "completed" ? "✓" : j.status === "failed" ? "✗" : j.status === "waiting" ? "⏸" : j.status === "interrupted" ? "⏹" : "⟳";
 				const dur = formatDuration((j.completedAt ?? Date.now()) - j.startedAt);
 				const task = j.task.replace(/\s+/g, " ").slice(0, 50);
-				return `${icon} #${j.id} ${j.agent} [${j.status}] · ${dur} — ${task}`;
+				const lineage = j.parentSessionId ? ` (from ${j.parentSessionId.slice(0, 8)})` : "";
+				return `${icon} #${j.id} ${j.agent} [${j.status}]${lineage} · ${dur} — ${task}`;
 			});
 			const head = `Subagent jobs (${running} running, ${jobs.length} total) — /jobs <id> for full output`;
 			ctx.ui.notify?.(`${head}\n${lines.join("\n")}`, "info");
@@ -1152,12 +1445,15 @@ export default function (pi: ExtensionAPI) {
 		name: "subagent",
 		label: "Subagent",
 		description:
-			"Launch a subagent to complete a task IN THE BACKGROUND. The call returns immediately with a job id; the subagent's full output arrives later as a follow-up message when it finishes. Do NOT wait or poll for it — continue with other work. " +
+			"Launch a subagent to complete a task IN THE BACKGROUND. The call returns immediately with a job id; the subagent's full output arrives later automatically as a follow-up message when it finishes. You do NOT need to check on it yourself. " +
+			"Do NOT poll for completion (no repeated /jobs checks, no shell commands like Get-Process/ps/tasklist in a loop) and do NOT sleep/wait in bash for it to finish — you will be notified the moment it's done, so just continue other work. " +
 			"Subagents have NO context from the current conversation — include all necessary context in the task description. " +
 			"The model for subagents is set via the /sub command — the agent cannot override it.",
 		promptSnippet: "Delegate tasks to background subagents",
 		promptGuidelines: [
-			"Subagents run in the BACKGROUND: the tool returns a job id right away and you are pinged with the full output via a follow-up message when the job finishes. Never wait or poll — launch the job, then keep working. Use /jobs to inspect status.",
+			"Subagents run in the BACKGROUND: the tool returns a job id right away and you are automatically pinged with the full output via a follow-up message when the job finishes. This happens without any action from you — launch the job, then immediately keep working.",
+			"Never poll for job completion: do not repeatedly call /jobs, and do not run shell commands (Get-Process, ps, tasklist, etc.) in a loop to check whether a subagent is done. You will be notified the instant it finishes.",
+			"Never sleep/wait (e.g. `sleep 10`, `Start-Sleep`) just to wait out a subagent. Only use a delay for something that itself genuinely needs wall-clock time to pass (e.g. an external rate limit) — never as a substitute for the completion notification.",
 			"When you have 2+ independent subagent tasks, ALWAYS use parallel mode with a SINGLE subagent call (tasks: [...]), never multiple separate subagent calls. A parallel batch delivers one consolidated follow-up message when all jobs finish.",
 			"Parallel tool calls are your primary parallelism mechanism — put multiple independent read/fetch/search calls in one function_calls block. Don't use subagents to parallelize simple I/O.",
 			"Use subagent to delegate *reasoning and decisions*: codebase exploration (scout), web research (researcher), or isolated code changes (worker)",
@@ -1189,18 +1485,32 @@ export default function (pi: ExtensionAPI) {
 			const resolvedModel = resolveSubagentModel(parentModel);
 			const available = agents.map((a) => a.name).join(", ") || "none";
 
-			// Build the batch of {agent, task, cwd} entries from either mode.
-			let entries: { agent: AgentConfig; task: string; cwd: string }[];
+			const sessionOptsFor = async (agent: AgentConfig, jobCwd: string): Promise<SessionOptions> => {
+				const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-sub-"));
+				if (agent.session === "fork") {
+					const parentFile = ctx.sessionManager.getSessionFile();
+					if (parentFile) return { mode: "fork", resume: false, tempDir, parentSessionFile: parentFile };
+					return { mode: "standalone", resume: false, tempDir }; // no parent session file to fork from
+				}
+				return { mode: agent.session, resume: false, tempDir };
+			};
+
+			// Build the batch of {agent, task, cwd, sessionOpts} entries from either mode.
+			let entries: { agent: AgentConfig; task: string; cwd: string; sessionOpts: SessionOptions }[];
 			if (params.tasks && params.tasks.length > 0) {
-				entries = params.tasks.map((t) => {
-					const agent = agents.find((a) => a.name === t.agent);
-					if (!agent) throw new Error(`Unknown agent: ${t.agent}. Available agents: ${available}`);
-					return { agent, task: t.task, cwd: t.cwd ?? cwd };
-				});
+				entries = await Promise.all(
+					params.tasks.map(async (t) => {
+						const agent = agents.find((a) => a.name === t.agent);
+						if (!agent) throw new Error(`Unknown agent: ${t.agent}. Available agents: ${available}`);
+						const jobCwd = t.cwd ?? cwd;
+						return { agent, task: t.task, cwd: jobCwd, sessionOpts: await sessionOptsFor(agent, jobCwd) };
+					}),
+				);
 			} else if (params.agent && params.task) {
 				const agent = agents.find((a) => a.name === params.agent);
 				if (!agent) throw new Error(`Unknown agent: ${params.agent}. Available agents: ${available}`);
-				entries = [{ agent, task: params.task, cwd: params.cwd ?? cwd }];
+				const jobCwd = params.cwd ?? cwd;
+				entries = [{ agent, task: params.task, cwd: jobCwd, sessionOpts: await sessionOptsFor(agent, jobCwd) }];
 			} else {
 				throw new Error("Provide either (agent + task) for single mode, or tasks[] for parallel mode.");
 			}
@@ -1211,8 +1521,8 @@ export default function (pi: ExtensionAPI) {
 			const ids = launched.map((j) => `#${j.id}`).join(", ");
 			const ack =
 				launched.length === 1
-					? `Started background subagent job ${ids} (${launched[0].agent}). It runs in the background — you will receive a follow-up message with its full output when it finishes. Do not wait or poll; continue with other work. Use /jobs to check status.`
-					: `Started ${launched.length} background subagent jobs (${ids}). They run in the background — you will receive a follow-up message with their full output once all finish. Do not wait or poll; continue with other work. Use /jobs to check status.`;
+					? `Started background subagent job ${ids} (${launched[0].agent}). You will be notified automatically with its full output when it finishes — no need to check /jobs or sleep/poll in the meantime. Continue with other work now.`
+					: `Started ${launched.length} background subagent jobs (${ids}). You will be notified automatically with their full output once all finish — no need to check /jobs or sleep/poll in the meantime. Continue with other work now.`;
 
 			return { content: [{ type: "text", text: ack }] };
 		},
@@ -1346,19 +1656,71 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	// ── Tool: subagent_resume ──────────────────
+	pi.registerTool({
+		name: "subagent_resume",
+		label: "Resume Subagent",
+		description:
+			"Send a reply to a subagent job that is paused waiting for input (status 'waiting') or was cancelled " +
+			"mid-turn (status 'interrupted'). Reopens its persisted session and continues the conversation. Runs " +
+			"in the BACKGROUND like the original job — you'll get a follow-up message automatically when it pauses or finishes again. Do NOT poll /jobs or sleep/wait for it; just continue other work.",
+		parameters: Type.Object({
+			job: Type.Number({ description: "Job id to resume (see /jobs)" }),
+			message: Type.String({ description: "Reply or next instruction to send to the paused subagent" }),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const job = jobs.find((j) => j.id === params.job);
+			if (!job) throw new Error(`No subagent job #${params.job}.`);
+			if (job.status !== "waiting" && job.status !== "interrupted") {
+				throw new Error(
+					`Job #${params.job} is not resumable (status: ${job.status}). Only 'waiting' or 'interrupted' jobs can be resumed.`,
+				);
+			}
+			const parentModel = ctx.model ? `${(ctx.model as any).provider}/${ctx.model.id}` : undefined;
+			const model = resolveSubagentModel(parentModel);
+			void resumeJob(job, params.message, ctx.hasUI, ctx, model);
+			return {
+				content: [
+					{ type: "text", text: `Resuming job #${job.id} in the background. You'll be notified automatically when it pauses or finishes — no need to check /jobs or sleep/poll.` },
+				],
+			};
+		},
+	});
+
+	// ── Tool: subagent_interrupt ────────────────
+	pi.registerTool({
+		name: "subagent_interrupt",
+		label: "Interrupt Subagent",
+		description:
+			"Cancel a running subagent job's current turn. Its session is preserved so it can be resumed later with subagent_resume.",
+		parameters: Type.Object({
+			job: Type.Number({ description: "Job id to interrupt (see /jobs)" }),
+		}),
+		async execute(_toolCallId, params) {
+			const job = jobs.find((j) => j.id === params.job);
+			if (!job) throw new Error(`No subagent job #${params.job}.`);
+			const result = interruptJob(job);
+			if (!result.ok) throw new Error(result.message);
+			return { content: [{ type: "text", text: result.message }] };
+		},
+	});
+
 	// ── Inject agent list into system prompt ───
 	pi.on("before_agent_start", async (_event, ctx) => {
 		const currentModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "default";
 		const subagentModel = getSubagentModel() || `inherited (${currentModel})`;
 		const list = agents
 			.map((a) => {
-				return `- ${a.name}: ${a.description}`;
+				const tags = [a.interactive ? "interactive" : null, a.session !== "standalone" ? `session:${a.session}` : null]
+					.filter(Boolean)
+					.join(", ");
+				return `- ${a.name}${tags ? ` (${tags})` : ""}: ${a.description}`;
 			})
 			.join("\n");
 		return {
 			systemPrompt:
 				_event.systemPrompt +
-				`\n\n## Available Subagents\nUse the \`subagent\` tool to delegate tasks to these specialized agents:\n${list}\n\nSubagents run with the model set via the \`/sub\` command (current: ${subagentModel}). Agents cannot specify their own model.\n\nIMPORTANT: Subagents run in the BACKGROUND. The \`subagent\` tool returns a job id immediately and you receive the full output later as a follow-up message when the job finishes — do NOT wait or poll, just continue with other work. Check status any time with \`/jobs\`.\n\nFor multiple independent tasks, always use a SINGLE subagent call with tasks:[] (parallel mode), never multiple separate subagent calls; a parallel batch sends one consolidated follow-up message when all jobs finish.`,
+				`\n\n## Available Subagents\nUse the \`subagent\` tool to delegate tasks to these specialized agents:\n${list}\n\nSubagents run with the model set via the \`/sub\` command (current: ${subagentModel}). Agents cannot specify their own model.\n\nIMPORTANT: Subagents run in the BACKGROUND. The \`subagent\` tool returns a job id immediately and you are automatically notified with the full output as a follow-up message when the job finishes — this requires no action from you. Do NOT poll for it: no repeated \`/jobs\` checks, no shell commands (Get-Process, ps, tasklist, etc.) in a loop, and no sleeping/waiting (e.g. \`sleep 10\`, \`Start-Sleep\`) to wait it out. Just continue with other work; the notification will interrupt you when it's ready. Only use \`/jobs\` for a one-off status check, never in a wait loop.\n\nFor multiple independent tasks, always use a SINGLE subagent call with tasks:[] (parallel mode), never multiple separate subagent calls; a parallel batch sends one consolidated follow-up message when all jobs finish.\n\nSome agents are marked "interactive" — they pause between phases instead of running to completion, and their job lands in status 'waiting' with the phase's question in the ping. Reply with the \`subagent_resume\` tool (job id + message) to continue; it reopens the same persisted session. Use \`subagent_interrupt\` to cancel a running job's current turn without losing its session (goes to status 'interrupted', also resumable). A human can do the same via \`/jobs reply <id> <text>\`, \`/jobs interrupt <id>\`, and watch a running job live (read-only) with \`/jobs watch <id>\`.\n\nAgents marked "session:fork" start with the full context of the current conversation; "session:lineage" start fresh but are tagged in \`/jobs\` as spawned from this session.`,
 		};
 	});
 }

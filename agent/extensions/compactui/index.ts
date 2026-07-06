@@ -32,6 +32,7 @@ import { Markdown, Text, Spacer, truncateToWidth } from "@earendil-works/pi-tui"
 import {
   line, noOp, orange, compactCall, compactSummary, compactFailed,
   expandedBox, diffExpandedBox, captureResult, DIM_GREY, capitalizeToolName, INDENT, wrapDiffLine, colorizeDiffLine,
+  getCommandName,
 } from "./rendering.js";
 import { patchTool, TRUNCATED_TOOLS, KNOWN_TOOLS, MAX_LINES } from "./patch-tools.js";
 import { initAssistantFooter } from "./assistant-footer.js";
@@ -764,14 +765,13 @@ export default function (pi: ExtensionAPI) {
     },
     renderResult(result, { expanded }, theme, context) {
       const details = result.details as Record<string, unknown> | undefined;
-      const full =
-        (details?._fullOutput as string) || result.content?.[0]?.text || "";
-      const lines = full.split("\n");
+      const contentStr = context.args.content || "";
+      const lines = contentStr.split("\n");
       const lineCount = lines.length;
 
       if (!expanded) {
         if (result.isError) return compactFailed(theme);
-        return compactSummary(theme, "Written", lineCount, "line", full);
+        return compactSummary(theme, "Written", lineCount, "line", contentStr);
       }
 
       const filePath = context.args.path ?? "?";
@@ -839,8 +839,8 @@ export default function (pi: ExtensionAPI) {
         if (removed > 0) summary += `removed ${removed} line${removed !== 1 ? "s" : ""}`;
         if (!summary) summary = "no changes";
         
-        // Show first 8 lines of diff with proper coloring
-        const PREVIEW_LINES = 8;
+        // Show first 3 lines of diff with proper coloring
+        const PREVIEW_LINES = 3;
         const previewLines = diffLines.slice(0, PREVIEW_LINES);
         const remaining = diffLines.length > PREVIEW_LINES ? diffLines.length - PREVIEW_LINES : 0;
         
@@ -902,7 +902,7 @@ export default function (pi: ExtensionAPI) {
     },
     renderCall(args, theme, context) {
       if (context.expanded) return noOp();
-      return compactCall("bash", args.command ?? "?", theme);
+      return compactCall("bash", getCommandName(args.command ?? "?"), theme);
     },
     renderResult(result, { expanded }, theme, context) {
       const details = result.details as Record<string, unknown> | undefined;
@@ -917,7 +917,7 @@ export default function (pi: ExtensionAPI) {
 
       const cmd =
         context.args.command || (details?.command as string) || "";
-      return expandedBox(theme, "bash", cmd, lines, 40);
+      return expandedBox(theme, "bash", getCommandName(cmd), lines, 40);
     },
   });
 

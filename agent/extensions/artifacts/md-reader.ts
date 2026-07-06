@@ -59,6 +59,7 @@ export class MarkdownReaderComponent implements Component {
   // Inline Commenting State
   private isCommenting = false;
   private commentInputText = "";
+  private commentCursorPos = 0;
 
   get focused(): boolean {
     return this._focused;
@@ -66,6 +67,18 @@ export class MarkdownReaderComponent implements Component {
 
   set focused(value: boolean) {
     this._focused = value;
+  }
+
+  private getCursorLineCol(): { line: number; col: number } {
+    const lines = this.commentInputText.split("\n");
+    let remaining = this.commentCursorPos;
+    for (let i = 0; i < lines.length; i++) {
+      if (remaining <= lines[i].length) {
+        return { line: i, col: remaining };
+      }
+      remaining -= lines[i].length + 1;
+    }
+    return { line: lines.length - 1, col: lines[lines.length - 1].length };
   }
 
   constructor(
@@ -84,13 +97,13 @@ export class MarkdownReaderComponent implements Component {
     this.tui = tui;
     this.onClose = onClose;
     // Strip the first H1 line so the title doesn't appear twice
-    const strippedContent = content.replace(/^#\s+.+\n?/, "");
+    const strippedContent = content.replace(/^#\s+.+\n?/, "").trimStart();
     this.markdown = new Markdown(strippedContent, 1, 0, markdownTheme);
   }
 
   private reloadContent() {
     const content = fs.readFileSync(this.artifact.path, "utf8");
-    const strippedContent = content.replace(/^#\s+.+\n?/, "");
+    const strippedContent = content.replace(/^#\s+.+\n?/, "").trimStart();
     this.markdown = new Markdown(strippedContent, 1, 0, this.markdownTheme);
     this.cachedWidth = 0; // force re-render
   }
@@ -100,6 +113,7 @@ export class MarkdownReaderComponent implements Component {
     if (this.selectedLineIndex < 0 || this.selectedLineIndex >= bodyLines.length) {
       this.isCommenting = false;
       this.commentInputText = "";
+      this.commentCursorPos = 0;
       return;
     }
     const selectedLine = bodyLines[this.selectedLineIndex];
@@ -107,6 +121,7 @@ export class MarkdownReaderComponent implements Component {
     if (!trimmedComment) {
       this.isCommenting = false;
       this.commentInputText = "";
+      this.commentCursorPos = 0;
       return;
     }
 
@@ -145,6 +160,7 @@ export class MarkdownReaderComponent implements Component {
       
       this.isCommenting = false;
       this.commentInputText = "";
+      this.commentCursorPos = 0;
       this.reloadContent();
       this.ctx.ui.notify(`Added comment below line ${targetLineIdx + 1}`, "info");
       setTimeout(() => { try { this.ctx.ui.notify(""); } catch {} }, 5000);
@@ -162,7 +178,10 @@ export class MarkdownReaderComponent implements Component {
         "Submit Review",
         `Submit review for "${this.artifact.title}" and notify the agent?`
       );
-      if (!confirmSubmit) return;
+      if (!confirmSubmit) {
+        this.tui.requestRender();
+        return;
+      }
 
       const piApi = (globalThis as any).__pi_artifacts_api;
       if (piApi && typeof piApi.sendUserMessage === "function") {
@@ -184,7 +203,7 @@ export class MarkdownReaderComponent implements Component {
     const inputLines = this.isCommenting ? this.commentInputText.split("\n") : [];
     const commentBoxLines = this.isCommenting ? 3 + inputLines.length : 0;
 
-    this.visibleHeight = Math.max(1, this.tui.terminal.rows - HEADER_LINES - FOOTER_LINES - commentBoxLines);
+    this.visibleHeight = Math.max(1, Math.min(10, this.tui.terminal.rows - HEADER_LINES - FOOTER_LINES - commentBoxLines));
 
     // Cache rendered lines when width changes
     if (width !== this.cachedWidth) {
@@ -252,10 +271,13 @@ export class MarkdownReaderComponent implements Component {
     if (this.isCommenting) {
       const commentHeader = this.theme.fg("accent", ` Comment on line ${this.selectedLineIndex + 1}:`);
       
+      const { line: cursorLine, col: cursorCol } = this.getCursorLineCol();
       const commentBody = inputLines.map((line, idx) => {
-        // Render fake cursor block at the end of the last line being typed
-        if (idx === inputLines.length - 1) {
-          return "  " + line + "\x1b[7m \x1b[27m";
+        // Render blinking cursor block at the actual cursor position
+        if (idx === cursorLine) {
+          const before = line.slice(0, cursorCol);
+          const after = line.slice(cursorCol);
+          return "  " + before + "\x1b[7m \x1b[27m" + after;
         }
         return "  " + line;
       });
@@ -310,6 +332,7 @@ export class MarkdownReaderComponent implements Component {
     if (data === "\x1b") { // Escape to cancel
       this.isCommenting = false;
       this.commentInputText = "";
+      this.commentCursorPos = 0;
       this.tui.requestRender();
       return;
     }
@@ -325,7 +348,8 @@ export class MarkdownReaderComponent implements Component {
     };
 
     if (isShiftEnter(data)) {
-      this.commentInputText += "\n";
+      this.commentInputText = this.commentInputText.slice(0, this.commentCursorPos) + "\n" + this.commentInputText.slice(this.commentCursorPos);
+      this.commentCursorPos++;
       this.tui.requestRender();
       return;
     }
@@ -335,14 +359,66 @@ export class MarkdownReaderComponent implements Component {
       return;
     }
 
+    if (data === "\x1b[A") { // Up arrow
+      const { line, col } = this.getCursorLineCol();
+      if (line > 0) {
+        let targetLineStart = 0;
+        for (let i = 0; i < line; i++) {
+          targetLineStart += this.commentInputText.split("\n")[i].length + 1;
+        }
+        const lines = this.commentInputText.split("\n");
+        const targetCol = Math.min(col, lines[line - 1].length);
+        targetLineStart -= lines[line - 1].length + 1;
+        this.commentCursorPos = targetLineStart + targetCol;
+      }
+      this.tui.requestRender();
+      return;
+    }
+
+    if (data === "\x1b[B") { // Down arrow
+      const { line, col } = this.getCursorLineCol();
+      const lines = this.commentInputText.split("\n");
+      if (line < lines.length - 1) {
+        let curLineStart = 0;
+        for (let i = 0; i < line; i++) {
+          curLineStart += lines[i].length + 1;
+        }
+        const nextLineStart = curLineStart + lines[line].length + 1;
+        const targetCol = Math.min(col, lines[line + 1].length);
+        this.commentCursorPos = nextLineStart + targetCol;
+      }
+      this.tui.requestRender();
+      return;
+    }
+
+    if (data === "\x1b[D") { // Left arrow
+      if (this.commentCursorPos > 0) {
+        this.commentCursorPos--;
+      }
+      this.tui.requestRender();
+      return;
+    }
+
+    if (data === "\x1b[C") { // Right arrow
+      if (this.commentCursorPos < this.commentInputText.length) {
+        this.commentCursorPos++;
+      }
+      this.tui.requestRender();
+      return;
+    }
+
     if (data === "\x7f" || data === "\x08") { // Backspace
-      this.commentInputText = this.commentInputText.slice(0, -1);
+      if (this.commentCursorPos > 0) {
+        this.commentInputText = this.commentInputText.slice(0, this.commentCursorPos - 1) + this.commentInputText.slice(this.commentCursorPos);
+        this.commentCursorPos--;
+      }
       this.tui.requestRender();
       return;
     }
 
     if (data === "\t") {
-      this.commentInputText += "  ";
+      this.commentInputText = this.commentInputText.slice(0, this.commentCursorPos) + "  " + this.commentInputText.slice(this.commentCursorPos);
+      this.commentCursorPos += 2;
       this.tui.requestRender();
       return;
     }
@@ -354,7 +430,8 @@ export class MarkdownReaderComponent implements Component {
     });
 
     if (!hasControlChars || data === " ") {
-      this.commentInputText += data;
+      this.commentInputText = this.commentInputText.slice(0, this.commentCursorPos) + data + this.commentInputText.slice(this.commentCursorPos);
+      this.commentCursorPos += data.length;
       this.tui.requestRender();
     }
   }

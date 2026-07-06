@@ -1,0 +1,17 @@
+{
+  "name": "pi-subagents-extension",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Spawn isolated pi processes as background subagents with predefined agent .md files",
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  }
+}

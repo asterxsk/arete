@@ -46,6 +46,23 @@ class CompactResult implements Component {
 	}
 }
 
+class SimpleComponent implements Component {
+	private cachedWidth?: number;
+	private cachedLines?: string[];
+	constructor(private readonly getLines: (width: number) => string[]) {}
+	invalidate() {
+		this.cachedWidth = undefined;
+		this.cachedLines = undefined;
+	}
+	render(width: number): string[] {
+		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
+		const rendered = this.getLines(width);
+		this.cachedWidth = width;
+		this.cachedLines = rendered;
+		return rendered;
+	}
+}
+
 const emptyComponent = Object.freeze({ render: () => [] as string[], invalidate() {}, handleInput() {} });
 
 interface QuestionOptionInput {
@@ -655,12 +672,22 @@ export default function (pi: ExtensionAPI) {
 				ids.add(q.id);
 			}
 
-			const result = await ctx.ui.custom<QuestionsResult>((tui, theme, _keybindings, done) => {
-				const component = new QuestionsComponent(tui, theme, questions);
-				component.onDone = (value) => done(value);
-				component.focused = true;
-				return component;
-			});
+			// Suppress spinner working-message while the interactive modal is active
+			const origSetWorkingMessage = ctx.ui.setWorkingMessage;
+			ctx.ui.setWorkingMessage = () => {};
+			ctx.ui.setWorkingMessage(undefined);
+
+			let result;
+			try {
+				result = await ctx.ui.custom<QuestionsResult>((tui, theme, _keybindings, done) => {
+					const component = new QuestionsComponent(tui, theme, questions);
+					component.onDone = (value) => done(value);
+					component.focused = true;
+					return component;
+				});
+			} finally {
+				ctx.ui.setWorkingMessage = origSetWorkingMessage;
+			}
 
 			if (!result || result.cancelled) {
 				return {
@@ -669,41 +696,42 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			const lines = result.answers.map((answer) => formatAnswer(answer));
+			const qLines = questions.map((q, idx) => {
+				const qAnswers = result.answers.filter((a) => a.questionId === q.id);
+				const prefix = idx === 0 ? "⎿  · " : "   · ";
+				const prompt = q.prompt;
+				const answerText = qAnswers.length > 0 ? qAnswers.map((a) => a.label).join(", ") : "(no answer)";
+				return `${prefix}${prompt} → ${answerText}`;
+			});
+			const count = questions.length;
+			const text = `● User answered ${count} question${count === 1 ? "" : "s"}:\n${qLines.join("\n")}`;
 			return {
-				content: [{ type: "text", text: lines.length > 0 ? lines.join("\n") : "No answers" }],
+				content: [{ type: "text", text }],
 				details: result,
 			};
 		},
 		renderCall() { return emptyComponent; },
-		renderResult(result, { isPartial, expanded }, theme) {
-		if (!(globalThis as any).__pi_betterui_enabled) return emptyComponent;
-			if (isPartial) return new CompactResult({ toolName: "questions", argsLine: "prompting...", state: "pending", theme });
+		renderResult(result, { isPartial, expanded }, theme, context) {
+			if (isPartial) {
+				const questionsCount = context?.args?.questions?.length ?? 0;
+				const text = `Asking ${questionsCount} question${questionsCount === 1 ? "" : "s"}...`;
+				return new SimpleComponent((width) => [truncateToWidth(text, width)]);
+			}
 			const content = result.content[0];
-			const text = content?.type === "text" ? content.text : "";
+			let text = content?.type === "text" ? content.text : "";
 			if (result.isError || text.startsWith("Error")) {
 				const firstLine = text.split("\n")[0] || "error";
-				return new CompactResult({ toolName: "questions", argsLine: firstLine, state: "error", theme });
+				return new SimpleComponent((width) => [truncateToWidth(firstLine, width)]);
 			}
 			const details = result.details as QuestionsResult | undefined;
 			if (details?.cancelled) {
-				return new CompactResult({ toolName: "questions", argsLine: "cancelled", state: "done", theme });
+				return new SimpleComponent((width) => [truncateToWidth("cancelled", width)]);
 			}
-			const allLines = text.split("\n").filter((l) => l.trim());
-			const argsLine = details?.answers.length !== undefined ? `${details.answers.length} answer${details.answers.length === 1 ? "" : "s"}` : "done";
-			let previewLines: string[] | undefined;
-			if (expanded) {
-				previewLines = allLines.map((l) => l.length > 120 ? l.slice(0, 117) + "..." : l);
+			if (text.startsWith("● ")) {
+				text = text.slice(2);
 			}
-			return new CompactResult({
-				toolName: "questions",
-				argsLine,
-				state: "done",
-				previewLines,
-				footer: allLines.length > 0 ? `${allLines.length} line${allLines.length === 1 ? "" : "s"}` : undefined,
-				expanded,
-				theme,
-			});
+			const lines = text.split("\n");
+			return new SimpleComponent((width) => lines.map((line) => truncateToWidth(line, width)));
 		},
 	});
 }

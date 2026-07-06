@@ -26,6 +26,7 @@ Registers a `questions` tool for asking the user structured multi-choice questio
 - Single-question mode auto-submits on selection
 - `renderShell: "self"` — tool manages its own shell rendering
 - Sketch lines have `[` and `]` stripped for display
+- **Spinner suppression**: Before entering `ctx.ui.custom()`, the spinner's `setWorkingMessage` is replaced with a no-op to prevent its 120ms ticks from clashing with the custom component's terminal rendering. Restored in `finally` block.
 
 ## Verification
 - Call the tool with a single question, verify option selection works

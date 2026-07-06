@@ -66,8 +66,25 @@ export function compactCall(toolName: string, argsStr: string, theme: any): Comp
   return line(INDENT + orange(theme, capitalizedName) + "(" + display + ")");
 }
 
+export function getCommandName(cmd: string): string {
+  cmd = cmd.trim();
+  let firstArg = "";
+  if (cmd.startsWith('"')) {
+    const endQuote = cmd.indexOf('"', 1);
+    firstArg = endQuote !== -1 ? cmd.slice(1, endQuote) : cmd;
+  } else if (cmd.startsWith("'")) {
+    const endQuote = cmd.indexOf("'", 1);
+    firstArg = endQuote !== -1 ? cmd.slice(1, endQuote) : cmd;
+  } else {
+    firstArg = cmd.split(/\s+/)[0] || "";
+  }
+  let base = firstArg.split(/[\\/]/).pop() || "";
+  base = base.replace(/\.(exe|cmd|bat|sh|ps1)$/i, "");
+  return base || "command";
+}
+
 export function compactSummary(theme: any, summary: string, count: number, unit: string, fullOutput?: string): Component {
-  const PREVIEW_LINES = 5;
+  const PREVIEW_LINES = 3;
   const lines = fullOutput ? fullOutput.split("\n").filter(l => l.trim()) : [];
   const showPreview = lines.length > 0;
   const previewLines = lines.slice(0, PREVIEW_LINES);
@@ -76,7 +93,7 @@ export function compactSummary(theme: any, summary: string, count: number, unit:
   const components: Component[] = [];
   
   if (showPreview) {
-    // Show first 5 lines of output
+    // Show first 3 lines of output
     for (let i = 0; i < previewLines.length; i++) {
       const prefix = i === 0 ? INDENT + DIM_GREY + "\u23bf  " : INDENT + "   ";
       const lineText = previewLines[i];
@@ -287,11 +304,13 @@ export function colorizeDiffLine(theme: any, line: string): string {
     const sign = numSignMatch[2];
     const rest = numSignMatch[3];
     if (sign === '+') {
-      const greenText = "\x1b[38;2;120;220;120m";
-      return `${DIM_GREY}${num}\x1b[39m ${greenText}+${rest}\x1b[39m`;
+      const greenText = "\x1b[38;2;160;240;160m";
+      const greenBg = "\x1b[48;2;20;60;20m";
+      return `${DIM_GREY}${num}\x1b[39m ${greenBg}${greenText}+${rest}\x1b[49m\x1b[39m`;
     }
-    const redText = "\x1b[38;2;220;120;120m";
-    return `${DIM_GREY}${num}\x1b[39m ${redText}-${rest}\x1b[39m`;
+    const redText = "\x1b[38;2;240;160;160m";
+    const redBg = "\x1b[48;2;60;20;20m";
+    return `${DIM_GREY}${num}\x1b[39m ${redBg}${redText}-${rest}\x1b[49m\x1b[39m`;
   }
 
   // ── Format A2: "NNN +" or "NNN -" (sign with no content — empty added/removed line)
@@ -300,11 +319,13 @@ export function colorizeDiffLine(theme: any, line: string): string {
     const num = numSignEmptyMatch[1].trim().padStart(3, " ");
     const sign = numSignEmptyMatch[2];
     if (sign === '+') {
-      const greenText = "\x1b[38;2;120;220;120m";
-      return `${DIM_GREY}${num}\x1b[39m ${greenText}+\x1b[39m`;
+      const greenText = "\x1b[38;2;160;240;160m";
+      const greenBg = "\x1b[48;2;20;60;20m";
+      return `${DIM_GREY}${num}\x1b[39m ${greenBg}${greenText}+\x1b[49m\x1b[39m`;
     }
-    const redText = "\x1b[38;2;220;120;120m";
-    return `${DIM_GREY}${num}\x1b[39m ${redText}-\x1b[39m`;
+    const redText = "\x1b[38;2;240;160;160m";
+    const redBg = "\x1b[48;2;60;20;20m";
+    return `${DIM_GREY}${num}\x1b[39m ${redBg}${redText}-\x1b[49m\x1b[39m`;
   }
 
   // ── Format B: "NNN content" (number, space, content — context line, no sign)
@@ -329,21 +350,25 @@ export function colorizeDiffLine(theme: any, line: string): string {
     const num = signFirstMatch[2].padStart(3, " ");
     const rest = signFirstMatch[3];
     if (sign === '+') {
-      const greenText = "\x1b[38;2;120;220;120m";
-      return `${DIM_GREY}${num}\x1b[39m ${greenText}+${rest}\x1b[39m`;
+      const greenText = "\x1b[38;2;160;240;160m";
+      const greenBg = "\x1b[48;2;20;60;20m";
+      return `${DIM_GREY}${num}\x1b[39m ${greenBg}${greenText}+${rest}\x1b[49m\x1b[39m`;
     }
-    const redText = "\x1b[38;2;220;120;120m";
-    return `${DIM_GREY}${num}\x1b[39m ${redText}-${rest}\x1b[39m`;
+    const redText = "\x1b[38;2;240;160;160m";
+    const redBg = "\x1b[48;2;60;20;20m";
+    return `${DIM_GREY}${num}\x1b[39m ${redBg}${redText}-${rest}\x1b[49m\x1b[39m`;
   }
 
   // ── Format E: standard unified diff (no line numbers): "+added", "-removed"
   if (line.startsWith('+')) {
-    const greenText = "\x1b[38;2;120;220;120m";
-    return `${greenText}+${line.slice(1)}\x1b[39m`;
+    const greenText = "\x1b[38;2;160;240;160m";
+    const greenBg = "\x1b[48;2;20;60;20m";
+    return `${greenBg}${greenText}+${line.slice(1)}\x1b[49m\x1b[39m`;
   }
   if (line.startsWith('-')) {
-    const redText = "\x1b[38;2;220;120;120m";
-    return `${redText}-${line.slice(1)}\x1b[39m`;
+    const redText = "\x1b[38;2;240;160;160m";
+    const redBg = "\x1b[48;2;60;20;20m";
+    return `${redBg}${redText}-${line.slice(1)}\x1b[49m\x1b[39m`;
   }
 
   return theme.fg("text", line);
@@ -372,41 +397,78 @@ export function wrapDiffLine(rl: string, width: number): string[] {
     const wrappedContent = wrapTextWithAnsi(contentStr, contentWidth);
     if (wrappedContent.length === 0) return [ansiPrefix];
 
-    const result = [ansiPrefix + wrappedContent[0]];
-
-    // Subsequent lines: no line number, just spaces + colored sign
-    const signColor = sign === '+'
-      ? "\x1b[38;2;120;220;120m"
+    const signBg = sign === '+'
+      ? "\x1b[48;2;20;60;20m"
       : sign === '-'
-        ? "\x1b[38;2;220;120;120m"
+        ? "\x1b[48;2;60;20;20m"
         : "";
-    const subsequentPrefix = " ".repeat(numAndSpaces.length) + (signColor ? signColor + sign + "\x1b[39m" : "   ");
+    const signFg = sign === '+'
+      ? "\x1b[38;2;160;240;160m"
+      : sign === '-'
+        ? "\x1b[38;2;240;160;160m"
+        : "";
+
+    const firstLine = ansiPrefix + wrappedContent[0] + (signBg ? "\x1b[49m\x1b[39m" : "");
+    const result = [firstLine];
+
+    // Subsequent lines: no line number, just spaces + colored space instead of sign
+    const subsequentPrefix = " ".repeat(numAndSpaces.length) + 
+      (signBg ? `${signBg}${signFg} ` : "   ");
 
     for (let j = 1; j < wrappedContent.length; j++) {
-      result.push(subsequentPrefix + wrappedContent[j]);
+      const lineText = subsequentPrefix + wrappedContent[j] + (signBg ? "\x1b[49m\x1b[39m" : "");
+      result.push(lineText);
     }
     return result;
   }
 
   // Standard unified diff format (no line numbers): colored sign is first visible char
-  // After colorizeDiffLine, ANSI codes precede the sign character
   const signMatch = visible.match(/^([+\- ])/);
   if (signMatch) {
+    const sign = signMatch[1];
     const prefixLen = 1; // just the sign char
     const [ansiPrefix, contentStr] = splitAnsiPrefix(rl, prefixLen);
     const contentWidth = Math.max(10, width - prefixLen - 2);
     const wrappedContent = wrapTextWithAnsi(contentStr, contentWidth);
     if (wrappedContent.length === 0) return [ansiPrefix];
 
-    const result = [ansiPrefix + wrappedContent[0]];
-    // Continuation: repeat the colored sign as alignment prefix
+    const signBg = sign === '+'
+      ? "\x1b[48;2;20;60;20m"
+      : sign === '-'
+        ? "\x1b[48;2;60;20;20m"
+        : "";
+
+    const firstLine = ansiPrefix + wrappedContent[0] + (signBg ? "\x1b[49m\x1b[39m" : "");
+    const result = [firstLine];
+    
+    // Continuation: replace sign with space in ansiPrefix
+    const subsequentPrefix = ansiPrefix.replace(/([+\-])/, " ");
     for (let j = 1; j < wrappedContent.length; j++) {
-      result.push(ansiPrefix + wrappedContent[j]);
+      const lineText = subsequentPrefix + wrappedContent[j] + (signBg ? "\x1b[49m\x1b[39m" : "");
+      result.push(lineText);
     }
     return result;
   }
 
   return wrapTextWithAnsi(rl, width);
+}
+
+function padBackground(line: string, width: number): string {
+  const w = visibleWidth(line);
+  if (w >= width) return line;
+  const padding = " ".repeat(width - w);
+  if (line.includes("\x1b[48;")) {
+    if (line.endsWith("\x1b[49m\x1b[39m")) {
+      return line.slice(0, -10) + padding + "\x1b[49m\x1b[39m";
+    }
+    if (line.endsWith("\x1b[39m\x1b[49m")) {
+      return line.slice(0, -10) + padding + "\x1b[39m\x1b[49m";
+    }
+    if (line.endsWith("\x1b[49m")) {
+      return line.slice(0, -5) + padding + "\x1b[49m";
+    }
+  }
+  return line + padding;
 }
 
 export function diffExpandedBox(theme: any, headerName: string, argsLine: string, lines: string[], limit: number, moreSuffix = ""): Component {
@@ -416,12 +478,24 @@ export function diffExpandedBox(theme: any, headerName: string, argsLine: string
   let moreLine = "";
   const capitalizedName = capitalizeToolName(headerName);
 
-  // Diff lines: ⎿ on first line, spaces on following lines, colored by +/-
-  // No padding - header is also at position 0
+  // Count added/removed lines from diff (exclude hunk headers +++/---)
+  let added = 0;
+  let removed = 0;
+  for (const dl of lines) {
+    if (dl.startsWith("+") && !dl.startsWith("+++")) added++;
+    if (dl.startsWith("-") && !dl.startsWith("---")) removed++;
+  }
+  let summary = "";
+  if (added > 0) summary += `Added ${added} line${added !== 1 ? "s" : ""}`;
+  if (added > 0 && removed > 0) summary += ", ";
+  if (removed > 0) summary += `removed ${removed} line${removed !== 1 ? "s" : ""}`;
+  if (!summary) summary = "no changes";
+
+  // First content line is the summary line
+  raw.push(DIM_GREY + "└ " + summary + "\x1b[39m");
+
   for (let i = 0; i < show.length; i++) {
-    // ⎿ is 1 char, ⎿ + 2 spaces = 3 chars total, same as 3 spaces on subsequent lines
-    const prefix = i === 0 ? "\u23bf  " : "   "; // ⎿ + 2 spaces, subsequent lines 3 spaces
-    raw.push(prefix + colorizeDiffLine(theme, show[i]));
+    raw.push(colorizeDiffLine(theme, show[i]));
   }
 
   if (hasMore) {
@@ -430,10 +504,11 @@ export function diffExpandedBox(theme: any, headerName: string, argsLine: string
   }
 
   // Store plain text version for copy/paste
-  const plainTextLines = [capitalizedName + "(" + argsLine + ")"];
-  for (const line of show) {
-    plainTextLines.push(line);
-  }
+  const plainTextLines = [
+    capitalizedName + "(" + argsLine + ")",
+    "└ " + summary,
+    ...show
+  ];
   if (hasMore) {
     const moreTextPt = moreSuffix ? " more " + moreSuffix : " more";
     plainTextLines.push("... " + (lines.length - limit) + moreTextPt);
@@ -454,16 +529,12 @@ export function diffExpandedBox(theme: any, headerName: string, argsLine: string
   return new GenericComponent((width: number) => {
       const result: string[] = [];
       const headerPrefix = orange(theme, capitalizedName) + "(";
-      // NOTE: headerPrefixWidth must track *visible* width (plain text characters),
-      // not the ANSI-escaped string length, since it is used to compute
-      // available wrapping width via subtraction from the terminal width.
       const headerPrefixWidth = capitalizedName.length + 1;
       const argsWidth = Math.max(10, width - headerPrefixWidth - 1);
 
       const cleanArgsLine = argsLine.replace(/\r/g, "").replace(/^\n+/, "");
       const wrappedArgs = wrapTextWithAnsi(cleanArgsLine, argsWidth);
       if (cleanArgsLine.length === 0) {
-        // No args - just show header without brackets
         result.push(truncateToWidth(orange(theme, capitalizedName), width));
       } else if (wrappedArgs.length === 0) {
         result.push(truncateToWidth(headerPrefix + ")", width));
@@ -481,10 +552,18 @@ export function diffExpandedBox(theme: any, headerName: string, argsLine: string
       }
       for (const rl of raw) {
         if (!rl) result.push("");
-        else if (visibleWidth(rl) <= width) result.push(rl);
-        else result.push(...wrapDiffLine(rl, width));
+        else {
+          let linesToRender: string[];
+          if (visibleWidth(rl) <= width) {
+            linesToRender = [rl];
+          } else {
+            linesToRender = wrapDiffLine(rl, width);
+          }
+          for (const line of linesToRender) {
+            result.push(padBackground(line, width));
+          }
+        }
       }
-      // Append more line separately — never with ⎿ prefix
       if (moreLine) {
         if (visibleWidth(moreLine) <= width) result.push(moreLine);
         else result.push(...wrapTextWithAnsi(moreLine, width));

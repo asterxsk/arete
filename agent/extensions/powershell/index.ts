@@ -36,6 +36,56 @@ function compactCall(toolName: string, argsStr: string, theme: any): Component {
 	return compactLine(INDENT + orange(theme, toolName) + " [" + display + "]" + DIM_GREY + HINT + "\x1b[39m");
 }
 
+function getCommandName(cmd: string): string {
+	cmd = cmd.trim();
+	let firstArg = "";
+	if (cmd.startsWith('"')) {
+		const endQuote = cmd.indexOf('"', 1);
+		firstArg = endQuote !== -1 ? cmd.slice(1, endQuote) : cmd;
+	} else if (cmd.startsWith("'")) {
+		const endQuote = cmd.indexOf("'", 1);
+		firstArg = endQuote !== -1 ? cmd.slice(1, endQuote) : cmd;
+	} else {
+		firstArg = cmd.split(/\s+/)[0] || "";
+	}
+	let base = firstArg.split(/[\\/]/).pop() || "";
+	base = base.replace(/\.(exe|cmd|bat|sh|ps1)$/i, "");
+	return base || "command";
+}
+
+function compactSummary(theme: any, summary: string, count: number, unit: string, fullOutput?: string): Component {
+	const PREVIEW_LINES = 3;
+	const lines = fullOutput ? fullOutput.split("\n").filter(l => l.trim()) : [];
+	const showPreview = lines.length > 0;
+	const previewLines = lines.slice(0, PREVIEW_LINES);
+	const remaining = count > PREVIEW_LINES ? count - PREVIEW_LINES : 0;
+
+	const components: Component[] = [];
+
+	if (showPreview) {
+		for (let i = 0; i < previewLines.length; i++) {
+			const prefix = i === 0 ? INDENT + DIM_GREY + "\u23bf  " : INDENT + "   ";
+			const lineText = previewLines[i];
+			const maxLen = 80;
+			const truncated = visibleWidth(lineText) > maxLen ? lineText.slice(0, maxLen - 3) + "..." : lineText;
+			components.push(compactLine(prefix + "\x1b[97m" + truncated + "\x1b[39m"));
+		}
+		if (remaining > 0) {
+			components.push(compactLine(INDENT + "  " + DIM_GREY + "... " + remaining + " more lines (ctrl+o to expand)\x1b[39m"));
+		}
+	} else {
+		const countStr = count > 0 ? `${count} ${unit}${count !== 1 ? "s" : ""}` : "no output";
+		components.push(compactLine(INDENT + DIM_GREY + "\u23bf " + countStr + " of output\x1b[39m"));
+	}
+
+	return {
+		render(width: number) {
+			return components.flatMap(c => c.render(width));
+		},
+		invalidate() {},
+	};
+}
+
 function formatDur(s: number): string {
 	if (s < 0.01) return "0.0s";
 	if (s < 60) return s.toFixed(1) + "s";
@@ -194,7 +244,7 @@ export default function (pi: ExtensionAPI) {
 
 		renderCall(args, theme, context) {
 			if (context.expanded) return noOp();
-			return compactCall("powershell", args.command ?? "?", theme);
+			return compactCall("powershell", getCommandName(args.command ?? "?"), theme);
 		},
 
 		renderResult(result, { expanded, isPartial }, theme, _context) {
@@ -202,11 +252,15 @@ export default function (pi: ExtensionAPI) {
 
 			const details = result.details as Record<string, unknown> | undefined;
 			const full = (details?._fullOutput as string) || result.content?.[0]?.text || "";
-			if (!expanded) return noOp();
-
 			const lines = full.split("\n");
 			const durationS = (details?._durationS as number) ?? -1;
-			return expandedBox(theme, "powershell", _context.args.command || "", lines, durationS, 40);
+
+			if (!expanded) {
+				if (result.isError) return compactLine(INDENT + DIM_GREY + "\u23bf failed tool call" + "\x1b[39m");
+				return compactSummary(theme, "Output", lines.length, "line", full);
+			}
+
+			return expandedBox(theme, "powershell", getCommandName(_context.args.command || ""), lines, durationS, 40);
 		},
 	});
 }
