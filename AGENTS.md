@@ -48,6 +48,7 @@ Update parent docs when parent-level structure, ownership, workflow, or child in
 - Verification must reflect an existing check; if no verification framework exists yet, leave it empty and update it when one exists
 
 Default section order:
+
 - Purpose
 - Ownership
 - Local Contracts
@@ -92,6 +93,25 @@ This repository contains a powerful, modular collection of extensions for the Pi
 ## User Preferences
 
 When the user requests a durable behavior change, record it here or in the relevant child AGENTS.md.
+
+## Local Contracts (tooling)
+
+- **Root toolchain**: `npm install` installs dev tooling + peer type packages (`@earendil-works/pi-coding-agent`, `pi-tui`, `pi-ai`).
+- **Lint/Format gate**: `npm run lint` (ESLint) and `npm run format:check` (Prettier) must pass for every PR. Naming conventions enforced via `@typescript-eslint/naming-convention` (camelCase default, PascalCase types).
+- **Tests**: `npm test` runs Vitest over `agent/extensions/**/tests/**`. New logic should include tests.
+- **Typecheck**: `npm run typecheck` runs `tsc --noEmit`; `agent/extensions/archived/**` is excluded (explicitly unmaintained).
+- **CI**: `.github/workflows/ci.yml` runs lint, format, typecheck, tests, and Gitleaks secret scanning on every PR.
+- **Dependency updates**: `.github/dependabot.yml` opens weekly update PRs (npm + GitHub Actions).
+- **Contributing**: `CODEOWNERS`, `.github/ISSUE_TEMPLATE/`, and `.github/pull_request_template.md` define ownership and PR/issue structure.
+- **Dev environment**: `.devcontainer/devcontainer.json` provides a one-command TypeScript/Node dev container.
+- **Contributing**: `docs/CONTRIBUTING.md` defines labels, workflow, and `docs/runbooks.md` covers incident/rollback procedures. `.env.example` templates required environment variables.
+- **Duplicate/complexity/dead-code**: `jscpd` (CI `duplicate-check`) flags copy-paste; ESLint `complexity` (max 25) and `import/no-unused-modules` enforce complexity and unused code.
+
+- **Header format**: Banner shows the arete ASCII logo (orange) at top; info panel shows below: `using {model} (thinking) by {provider}` / `in {directory} with branch {branch}`
+- **Banner indent**: ASCII art is indented 1 space to align with info text
+- **Thinking block prefix**: Thinking blocks render with `┃ ` prefix line
+- **Shared tui bridge**: TUI components (thinking, bar, questions) live in the `tui` extension and are shared via `__pi_tui` globalThis bridge
+- **Input bar format**: BoxedEditor replaces the default editor: ╭─╮ top, `│ ❯ content... │`, ╰─╯ bottom. White ┃ side borders and corners, grey ❯, white content text. During agent turn, a red `━` block blinks at the 3rd dash from the left (60ms tick, ~250ms blink). No ↑ indicator. Spinner suppressed while animating.
 
 ## Child DOX Index
 

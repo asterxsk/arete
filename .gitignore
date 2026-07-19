@@ -40,3 +40,18 @@ agent/extensions/**/node_modules/*
 
 # Explicitly ignore crash log (though * already ignores it, being explicit)
 agent/pi-crash.log
+
+# Secrets, environment, IDE, and OS files
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+*.log
+coverage/
+.nyc_output/
+reports/

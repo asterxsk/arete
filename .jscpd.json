@@ -1,0 +1,16 @@
+{
+  "threshold": 5,
+  "minTokens": 50,
+  "minLines": 5,
+  "format": ["typescript", "javascript", "json", "markdown"],
+  "ignore": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "agent/extensions/archived/**",
+    "droid-wiki/**",
+    "artifacts/**",
+    ".husky/**"
+  ],
+  "reporters": ["console", "html"],
+  "output": "reports/jscpd"
+}
