@@ -27,6 +27,7 @@ import * as lsMod from "./ls.js";
 import * as grepMod from "./grep.js";
 import * as findMod from "./find.js";
 import { registerExecuteTool } from "./execute.js";
+import { patchUnknownToolRenderers } from "./patch-tools.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -144,4 +145,10 @@ export function registerToolRenderers(pi: ExtensionAPI): void {
   // bash + pwsh + powershell now route to the single combined Execute tool,
   // which supersedes the legacy separate bash/powershell renderers.
   registerExecuteTool(pi);
+
+  // Monkey-patch ToolExecutionComponent.render (and instance/prototype
+  // registerTool + addMessageToChat spacing) so any tool without a dedicated
+  // render module still renders in the unified format. Runs after per-tool
+  // registration so late-registered tools are also caught.
+  patchUnknownToolRenderers(pi);
 }
