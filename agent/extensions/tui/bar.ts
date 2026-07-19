@@ -141,6 +141,16 @@ export class BoxedEditor extends CustomEditor {
 
 // ── Animation lifecycle ──────────────────────────────────────────────
 
+/** Re-apply the hidden working indicator so the host's default
+ *  (`Working…`) spinner / RetryStatusIndicator never shows through while
+ *  the red `━` sweep owns the bar. Safe to call repeatedly (idempotent). */
+function applyHiddenIndicator(ctx: any): void {
+  if (!ctx?.hasUI) return;
+  ctx.ui.setWorkingIndicator({ frames: [] });
+  ctx.ui.setWorkingMessage(undefined);
+  ctx.ui.setWorkingVisible(false);
+}
+
 function tick(): void {
   if (!isAnimating) return;
   blinkPhase += (2 * Math.PI) / BLINK_PERIOD_TICKS;
@@ -149,20 +159,30 @@ function tick(): void {
   requestRenderFn?.();
 }
 
+/** Begin (or re-assert) the sweep. Idempotent: a second call never
+ *  spawns a second interval, only re-applies the hidden indicator and
+ *  forces the animating flag on. */
 function startAnimation(ctx: any): void {
   isAnimating = true;
   animPosition = 0;
 
-  // Hide default spinner
-  ctx.ui.setWorkingIndicator({ frames: [] });
-  ctx.ui.setWorkingMessage(undefined);
-  ctx.ui.setWorkingVisible(false);
+  // Hide default spinner (idempotent)
+  applyHiddenIndicator(ctx);
 
   editorInstance?.invalidate();
   requestRenderFn?.();
 
   if (intervalId === null) {
     intervalId = setInterval(tick, TICK_MS);
+  }
+}
+
+/** Restore the default working indicator. Called ONLY on a true agent_end. */
+function restoreDefaultIndicator(): void {
+  if (currentCtx?.hasUI) {
+    currentCtx.ui.setWorkingIndicator(undefined);
+    currentCtx.ui.setWorkingMessage(undefined);
+    currentCtx.ui.setWorkingVisible(true);
   }
 }
 
@@ -175,11 +195,7 @@ function stopAnimation(): void {
     intervalId = null;
   }
 
-  if (currentCtx?.hasUI) {
-    currentCtx.ui.setWorkingIndicator(undefined);
-    currentCtx.ui.setWorkingMessage(undefined);
-    currentCtx.ui.setWorkingVisible(true);
-  }
+  restoreDefaultIndicator();
 
   editorInstance?.invalidate();
   requestRenderFn?.();
@@ -190,11 +206,7 @@ function cleanup(): void {
     clearInterval(intervalId);
     intervalId = null;
   }
-  if (currentCtx?.hasUI) {
-    currentCtx.ui.setWorkingIndicator(undefined);
-    currentCtx.ui.setWorkingMessage(undefined);
-    currentCtx.ui.setWorkingVisible(true);
-  }
+  restoreDefaultIndicator();
   isAnimating = false;
   animPosition = 0;
   editorInstance = null;
@@ -234,12 +246,35 @@ export function registerBar(pi: ExtensionAPI): void {
     }
   });
 
+  // Fresh agent_start (new turn / new session re-entry): idempotently
+  // re-assert the hidden spinner state and the sweep, ensuring exactly one
+  // interval and no default spinner leak. Restores on top of any prior state.
+  pi.on("agent_start", async (_event: any, ctx: any) => {
+    if (ctx) currentCtx = ctx;
+    if (currentCtx?.hasUI) {
+      startAnimation(currentCtx);
+    }
+  });
+
   pi.on("agent_end", async () => {
     stopAnimation();
   });
 
+  // Retry boundary (API-error interrupt / re-settle). If the sweep is already
+  // animating, re-apply the hidden indicator so the host RetryStatusIndicator
+  // does not show through, but never restore the default spinner mid-turn.
   pi.on("turn_start", async (_event: any, ctx: any) => {
     if (ctx) currentCtx = ctx;
+    if (isAnimating && currentCtx?.hasUI) {
+      applyHiddenIndicator(currentCtx);
+    }
+  });
+
+  pi.on("agent_settled", async (_event: any, ctx: any) => {
+    if (ctx) currentCtx = ctx;
+    if (isAnimating && currentCtx?.hasUI) {
+      applyHiddenIndicator(currentCtx);
+    }
   });
 
   pi.on("session_shutdown", () => {

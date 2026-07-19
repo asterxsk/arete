@@ -9,7 +9,7 @@ Shared TUI component library for Pi extensions. Provides reusable UI components 
 - `ThinkingComponent` — renders thinking blocks with a `┃ ` prefix line in grey
 - `patchThinkingRendering()` — monkey-patches `AssistantMessageComponent.prototype.updateContent` to use `ThinkingComponent` instead of native italic Markdown for thinking blocks. Runs at extension load time in `index.ts`. Falls back gracefully if pi modules are unavailable.
 - `BoxedEditor` — extends `CustomEditor` to replace the default editor border with a boxed one: ╭─╮ top, `│ ❯ content... │`, ╰─╯ bottom. White `│` side borders and `╭╮╰╯` corners, grey `❯` prompt, white content text. During agent turn, a red `━` block blinks at the 3rd dash from the left (counting the corner as position 0), toggling every 250ms (60ms tick). On idle, static `╭─╮` with just `❯` (no `↑`). Spinner is suppressed while animation is active.
-- `registerBar(pi)` — lifecycle hooks (`session_start`, `before_agent_start`, `agent_end`, `turn_start`, `session_shutdown`) that register `BoxedEditor` via `ctx.ui.setEditorComponent()`, drive the animation interval, and hide/restore the spinner.
+- `registerBar(pi)` — lifecycle hooks (`session_start`, `before_agent_start`, `agent_start`, `agent_end`, `turn_start`, `agent_settled`, `session_shutdown`) that register `BoxedEditor` via `ctx.ui.setEditorComponent()`, drive the animation interval, and hide/restore the spinner. `startAnimation` is idempotent (guards a single `setInterval`). `agent_start` re-applies the hidden indicator (`setWorkingIndicator({frames:[]})` + `setWorkingVisible(false)`) and forces `isAnimating=true`. On a retry boundary (`turn_start`/`agent_settled`) while already animating, the hidden indicator is re-applied so the host `RetryStatusIndicator` never shows through. The default spinner is restored ONLY on a true `agent_end` (or `session_shutdown` cleanup).
 - `QuestionsComponent` — interactive multi-choice question dialog (moved from `questions/`)
 - `normalizeLabel`, `buildQuestions`, `formatAnswer`, `makeResult`, `formatAnswerSummary` — question utility functions (re-exported for tool integrations). `formatAnswerSummary(questions, result)` builds the post-answer text (header + per-question lines, no UI prefix).
 - `memory.ts` — shared memory-tool UI: `renderMemorySearchCall` (bold `memory_search` call line) and `renderMemorySearchResult` (collapsed `X found` / `↳ <first>` / `└ N more, ctrl+o to expand`, expanded full output). Consumed by pi-hermes-memory via the bridge.
@@ -24,7 +24,7 @@ Shared TUI component library for Pi extensions. Provides reusable UI components 
 - **Bridge**: Exports via `globalThis.__pi_tui` — other extensions `getTui()` at runtime rather than importing TypeScript modules
 - **Extension load order**: `tui` must load before `questions` (and any other extension that consumes the bridge)
 - **BoxedEditor**: Extends `CustomEditor` from `@earendil-works/pi-coding-agent`, created with default `paddingX=0`. The base `Editor.render()` with `paddingX=0` draws NO side borders — only full-width `─` top/bottom lines with centered text (leading space reserved for cursor). `BoxedEditor.render(width)` calls `super.render(width-2)` then wraps output: top `─`→`╭─╮`, each middle text line gets `│` rails with `❯` injected on line 1 (preserving base ANSI: cursor reverse-video, text color), bottom `─`→`╰─╯`. Autocomplete lines (after bottom border) are left untouched.
-- **Animation lifecycle**: Interval runs at 60ms; a fixed red `━` block blinks at dash index 2 (`BLINK_POS`), toggled every `BLINK_TICKS` ticks (~250ms). `ctx.ui.setWorkingIndicator({ frames: [] })` hides the default spinner during animation. Restored on `agent_end`.
+- **Animation lifecycle**: Interval runs at 60ms; a fixed red `━` block blinks at dash index 2 (`BLINK_POS`), toggled every `BLINK_TICKS` ticks (~250ms). `startAnimation` is idempotent — it never spawns a second `setInterval`. `applyHiddenIndicator(ctx)` centralizes the hidden-spinner state (`setWorkingIndicator({frames:[]})` + `setWorkingVisible(false)`) and is called from `startAnimation`, `agent_start`, and the `turn_start`/`agent_settled` retry paths. The default spinner is restored ONLY on a true `agent_end` (via `restoreDefaultIndicator`) and on `session_shutdown` cleanup. Exactly one interval exists while active; it is cleared on `session_shutdown` with no leak.
 
 ## Work Guidance
 
@@ -42,6 +42,7 @@ Shared TUI component library for Pi extensions. Provides reusable UI components 
 - Thinking blocks should show `┃ ` prefix on each line
 - Editor should show boxed border with `↑❯` when idle, `━` sweep and `❯` during agent turn
 - Default spinner should not appear during agent turn
+- Blinker must survive API-error/retry: red `━` sweep keeps animating and the default `Working…` spinner never reappears; exactly one interval, cleared on `session_shutdown`
 
 ## Child DOX Index
 
