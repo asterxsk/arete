@@ -107,3 +107,59 @@ export function truncate(lines: string[], max: number): Component {
 export function group(children: Component[]): Component {
   return component((width: number) => children.flatMap((c) => c.render(width)));
 }
+
+// ── Unified tool block ────────────────────────────────────────────────
+//
+// Composes the unified per-tool format shared by read/write/edit/bash/ls/
+// grep/find/powershell:
+//
+//   <glow tool title (+ dimmed args)>     (collapsed header)
+//   ↳ <summary> [(count)]<hint?>          (muted output/summary line)
+//   <optional expanded body lines>
+//   ───────────── (full-width border separator)
+//
+// The block is width-aware: the separator is sized to the current render
+// width and the body is computed lazily with access to that width, so
+// truncation behaves correctly at any terminal size.
+
+export const COLLAPSED_BUDGET = 8;
+
+export interface UnifiedBlockOptions {
+  /** Tool name shown as the greyish-white glow title. */
+  name: string;
+  /** Optional dimmed args appended to the glow title (file path, command, …). */
+  argSummary?: string;
+  /** Muted summary text shown after the `↳` arrow. */
+  summary: string;
+  /** Optional count appended to the summary in `(count)` form. */
+  count?: number;
+  /** Optional expansion/truncation hint appended to the summary line. */
+  hint?: string;
+  /** Expanded body: lazily rendered with the current width. Omitted when collapsed. */
+  body?: (width: number) => string[];
+}
+
+export function unifiedBlock(theme: any, opts: UnifiedBlockOptions): Component {
+  return component((width: number) => {
+    const out: string[] = [];
+    out.push(glowLabel(theme, opts.name, opts.argSummary).render(width)[0]);
+    let arrow = opts.summary;
+    if (opts.count !== undefined) arrow += ` (${opts.count})`;
+    if (opts.hint) arrow += opts.hint;
+    out.push(outputArrowLine(theme, arrow).render(width)[0]);
+    if (opts.body) out.push(...opts.body(width));
+    out.push(separator(theme, width).render(width)[0]);
+    return out;
+  });
+}
+
+// ── Number a list of lines (muted 4-wide gutter) ──────────────────────
+//
+// Used by read/write expanded views to show "  N  content".
+
+export function numberedLines(theme: any, lines: string[], start = 1): string[] {
+  return lines.map((line, i) => {
+    const num = theme.fg("muted", String(start + i).padStart(4, " "));
+    return `${num}  ${theme.fg("toolOutput", line)}`;
+  });
+}
