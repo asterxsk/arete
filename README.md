@@ -123,7 +123,7 @@ npm test               # Vitest — runs extension test suites
 npm run typecheck      # tsc --noEmit across extensions (informational)
 ```
 
-Contributions must pass `npm run lint` and `npm run format:check` and include tests where applicable. A `devcontainer.json` is provided for a one-command dev environment, and `.github/workflows/ci.yml` runs lint, format, typecheck, tests, duplicate-code, and secret scanning on every pull request. See [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) for the full workflow, label taxonomy, and runbooks ([`docs/runbooks.md`](docs/runbooks.md)). Local environment variables are templated in [`.env.example`](.env.example).
+Contributions must pass `npm run lint` and `npm run format:check` and include tests where applicable. A `devcontainer.json` is provided for a one-command dev environment, and `.github/workflows/ci.yml` runs lint, format, typecheck, tests, duplicate-code, and secret scanning on every pull request. See [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) for the full workflow, label taxonomy, and runbooks ([`docs/runbooks.md`](docs/runbooks.md)). Local environment variables are templated in [`.env.example`](.env.example). Architecture and secrets handling are documented in [`docs/architecture.md`](docs/architecture.md) and [`docs/secrets.md`](docs/secrets.md).
 
 ---
 

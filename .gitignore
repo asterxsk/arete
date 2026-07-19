@@ -11,6 +11,20 @@
 !version.txt
 !web-search.json
 
+# Un-ignore repo tooling / CI / docs infrastructure
+!package.json
+!package-lock.json
+!tsconfig.json
+!eslint.config.mjs
+!.prettierrc.json
+!.prettierignore
+!vitest.config.ts
+!.jscpd.json
+!.husky/**
+!.github/**
+!.devcontainer/**
+!docs/**
+
 # Un-ignore agent folder
 !agent/
 
