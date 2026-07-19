@@ -28,8 +28,16 @@ import { MemoryStore } from "./store/memory-store.js";
 import { SkillStore } from "./store/skill-store.js";
 import { DatabaseManager } from "./store/db.js";
 import { indexSession, upsertSessionFileMetadata } from "./store/session-indexer.js";
-import { scheduleSessionBackfill, waitForSessionBackfill, SESSION_BACKFILL_SHUTDOWN_TIMEOUT_MS } from "./handlers/session-backfill.js";
-import { scheduleLiveSessionIndex, waitForLiveSessionIndex, SESSION_LIVE_INDEX_SHUTDOWN_TIMEOUT_MS } from "./handlers/session-live-index.js";
+import {
+  scheduleSessionBackfill,
+  waitForSessionBackfill,
+  SESSION_BACKFILL_SHUTDOWN_TIMEOUT_MS,
+} from "./handlers/session-backfill.js";
+import {
+  scheduleLiveSessionIndex,
+  waitForLiveSessionIndex,
+  SESSION_LIVE_INDEX_SHUTDOWN_TIMEOUT_MS,
+} from "./handlers/session-live-index.js";
 import { parseSessionFile } from "./store/session-parser.js";
 import { registerMemoryTool } from "./tools/memory-tool.js";
 import { registerSkillTool } from "./tools/skill-tool.js";
@@ -45,7 +53,10 @@ import { registerInterviewCommand } from "./handlers/interview.js";
 import { registerSwitchProjectCommand } from "./handlers/switch-project.js";
 import { registerIndexSessionsCommand } from "./handlers/index-sessions.js";
 import { registerLearnMemoryCommand } from "./handlers/learn-memory.js";
-import { registerSyncMarkdownMemoriesCommand, syncMarkdownMemoriesToSqlite } from "./handlers/sync-markdown-memories.js";
+import {
+  registerSyncMarkdownMemoriesCommand,
+  syncMarkdownMemoriesToSqlite,
+} from "./handlers/sync-markdown-memories.js";
 import { registerPreviewContextCommand } from "./handlers/preview-context.js";
 import { loadConfig } from "./config.js";
 import { detectProject, detectProjectSkills } from "./project.js";
@@ -74,7 +85,11 @@ export function registerProjectSkillDiscoveryHandler(
   projectsMemoryDir: string | undefined,
 ): void {
   pi.on("resources_discover", async (event, _ctx) => {
-    return resolveProjectSkillDiscovery(skillStore, projectsMemoryDir, (event as { cwd?: string }).cwd);
+    return resolveProjectSkillDiscovery(
+      skillStore,
+      projectsMemoryDir,
+      (event as { cwd?: string }).cwd,
+    );
   });
 }
 
@@ -90,9 +105,8 @@ export default function (pi: ExtensionAPI) {
     ? path.resolve(configuredMemoryDir) === path.resolve(legacyGlobalDir)
     : false;
 
-  const globalDir = !configuredMemoryDir || pointsToLegacyMemoryDir
-    ? defaultGlobalDir
-    : configuredMemoryDir;
+  const globalDir =
+    !configuredMemoryDir || pointsToLegacyMemoryDir ? defaultGlobalDir : configuredMemoryDir;
 
   const shouldMigrateExtensionRoot = !configuredMemoryDir || pointsToLegacyMemoryDir;
   let extensionRootMigrated = false;
@@ -195,15 +209,38 @@ export default function (pi: ExtensionAPI) {
 
   // ── 7. Setup auto-consolidation (inject consolidator into stores) ──
   store.setConsolidator(async (target, signal) => {
-    return triggerConsolidation(pi, store, target, signal, config.consolidationTimeoutMs, target, config);
+    return triggerConsolidation(
+      pi,
+      store,
+      target,
+      signal,
+      config.consolidationTimeoutMs,
+      target,
+      config,
+    );
   });
   if (projectStore) {
     projectStore.setConsolidator(async (target, signal) => {
       const toolTarget = target === "memory" ? "project" : target;
-      return triggerConsolidation(pi, projectStore, target, signal, config.consolidationTimeoutMs, toolTarget, config);
+      return triggerConsolidation(
+        pi,
+        projectStore,
+        target,
+        signal,
+        config.consolidationTimeoutMs,
+        toolTarget,
+        config,
+      );
     });
   }
-  registerConsolidateCommand(pi, store, config.consolidationTimeoutMs, projectStore, projectName, config);
+  registerConsolidateCommand(
+    pi,
+    store,
+    config.consolidationTimeoutMs,
+    projectStore,
+    projectName,
+    config,
+  );
 
   // ── 8. Setup correction detection ──
   setupCorrectionDetector(pi, store, projectStore, config, dbManager, projectName);
@@ -214,13 +251,22 @@ export default function (pi: ExtensionAPI) {
   registerInterviewCommand(pi, store);
   registerSwitchProjectCommand(pi, config);
   registerLearnMemoryCommand(pi);
-  registerSyncMarkdownMemoriesCommand(pi, dbManager, globalDir, config.projectsMemoryDir, agentRoot);
+  registerSyncMarkdownMemoriesCommand(
+    pi,
+    dbManager,
+    globalDir,
+    config.projectsMemoryDir,
+    agentRoot,
+  );
   registerPreviewContextCommand(pi, store, projectStore, projectName, config);
 
   // ── 10. Live session indexing ──
   pi.on("message_end", async (_event, ctx) => {
     scheduleLiveSessionIndex(dbManager, ctx.sessionManager, {
-      onError: (err) => console.warn(`Live session indexing failed: ${err instanceof Error ? err.message : String(err)}`),
+      onError: (err) =>
+        console.warn(
+          `Live session indexing failed: ${err instanceof Error ? err.message : String(err)}`,
+        ),
     });
   });
 
@@ -265,7 +311,11 @@ export default function (pi: ExtensionAPI) {
       } catch {
         // Best effort only — shutdown should not be held up by indexing errors.
       }
-      try { dbManager.close(); } catch { /* best effort — never block shutdown */ }
+      try {
+        dbManager.close();
+      } catch {
+        /* best effort — never block shutdown */
+      }
     }
   });
 }
