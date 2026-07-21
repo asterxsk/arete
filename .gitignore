@@ -11,6 +11,20 @@
 !version.txt
 !web-search.json
 
+# Un-ignore repo tooling / CI / docs infrastructure
+!package.json
+!package-lock.json
+!tsconfig.json
+!eslint.config.mjs
+!.prettierrc.json
+!.prettierignore
+!vitest.config.ts
+!.jscpd.json
+!.husky/**
+!.github/**
+!.devcontainer/**
+!docs/**
+
 # Un-ignore agent folder
 !agent/
 
@@ -40,3 +54,18 @@ agent/extensions/**/node_modules/*
 
 # Explicitly ignore crash log (though * already ignores it, being explicit)
 agent/pi-crash.log
+
+# Secrets, environment, IDE, and OS files
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+*.log
+coverage/
+.nyc_output/
+reports/
