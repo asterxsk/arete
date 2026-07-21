@@ -1,23 +1,32 @@
 /**
- * patch-tools.ts — Tool patching logic for compact rendering
+ * patch-tools.ts — Unified tool patching with template-based rendering
  *
- * Intercepts tool renderCall/renderResult to apply compact two-line
- * display with orange name, args truncation, and expandable output.
- * Includes special-case handlers for todo, questions, powershell,
- * run_command, web_search, web_fetch, manage_task, and schedule.
+ * Intercepts tool renderCall/renderResult to apply template-based compact
+ * two-line display. Routes each tool to the appropriate template based on
+ * its name:
+ *
+ *   read             → standardTemplate (with batch tracking)
+ *   write            → writeTemplate
+ *   edit             → editTemplate
+ *   bash             → executeTemplate (shell=bash)
+ *   powershell/pwsh  → executeTemplate (shell=pwsh)
+ *   run_command      → executeTemplate (shell=shell)
+ *   subagent         → skip (self-rendered by subagents extension)
+ *   questions        → skip (self-rendered, kept as-is)
+ *   everything else  → standardTemplate
+ *
+ * The questions tool is intentionally left unchanged.
  */
 
-import * as path from "path";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { type Component } from "@earendil-works/pi-tui";
 import {
-  line, noOp, orange, compactCall, compactSummary, compactFailed,
-  expandedBox, DIM_GREY, capitalizeToolName,
+  line, noOp, orange, DIM_GREY, capitalizeToolName,
+  standardTemplate, writeTemplate, editTemplate, executeTemplate,
 } from "./rendering.js";
 
 // ── Constants ──────────────────────────────────────────────────────────
 
 export const MAX_LINES = 5;
-export const TRUNCATED_TOOLS = new Set(["bash", "powershell", "run_command"]);
 export const KNOWN_TOOLS = new Set([
   "read", "write", "edit", "bash", "grep", "find", "ls",
   "web_search", "web_fetch", "fetch_content", "get_search_content",
@@ -26,308 +35,352 @@ export const KNOWN_TOOLS = new Set([
   "memory", "memory_search", "session_search",
 ]);
 
-// ── CustomBlock (fallback component) ───────────────────────────────────
+export const TRUNCATED_TOOLS = new Set(["bash", "powershell", "run_command"]);
 
-class CustomBlock {
-  width: number;
-  height: number;
-  lines: string[];
-  constructor(lines: string[]) {
-    this.lines = lines;
-    this.width = 0;
-    this.height = lines.length;
+// ── Template Dispatch ──────────────────────────────────────────────────
+
+/**
+ * Resolve the appropriate template for a tool based on its name and
+ * result/args state. Returns a { renderCall, renderResult } pair.
+ */
+function resolveTemplate(tool: any): { renderCall?: (args: any, theme: any, context: any) => Component; renderResult?: (result: any, opts: any, theme: any, context: any) => Component } | null {
+  const name = tool.name;
+
+  // ── Tools with their own rendering (skip) ─────────────────────────
+  if (name === "subagent") return null;
+  if (name === "todo") return null; // hidden
+  if (name === "questions" || name === "ask_question" || name === "ask_questions" || name === "question") return null;
+
+  // ── Read (standard template, with path-based label) ─────────────────
+  if (name === "read") {
+    return {
+      renderCall(args: any, theme: any, context: any) {
+        if (context.expanded) return noOp();
+        return line(orange(theme, "Read") + ` ${args.path ?? args.file ?? "?"}`);
+      },
+      renderResult(result: any, opts: any, theme: any, context: any) {
+        const full = (result.details as any)?._fullOutput || result.content?.[0]?.text || "";
+        const lines = full.split("\n");
+        const filePath = context.args.path ?? context.args.file ?? "?";
+        return standardTemplate("read", filePath, lines, opts.expanded, theme, {
+          count: lines.length,
+          unit: "line",
+          isError: result.isError,
+        });
+      },
+    };
   }
-  invalidate() {}
-  handleInput() {}
-  render(width: number) {
-    return this.lines.map((l: string) => truncateToWidth(l, width));
+
+  // ── Write ─────────────────────────────────────────────────────────
+  if (name === "write") {
+    return {
+      renderCall(args: any, theme: any, context: any) {
+        if (context.expanded) return noOp();
+        return line(orange(theme, "Write") + ` ${args.path ?? args.file ?? "?"}`);
+      },
+      renderResult(result: any, opts: any, theme: any, context: any) {
+        const contentStr = context.args.content || "";
+        const lines = contentStr.split("\n");
+        return writeTemplate(context.args.path ?? "?", lines, opts.expanded, theme);
+      },
+    };
   }
+
+  // ── Edit ──────────────────────────────────────────────────────────
+  if (name === "edit") {
+    return {
+      renderCall(args: any, theme: any, context: any) {
+        if (context.expanded) return noOp();
+        return line(orange(theme, "Update") + ` ${args.path ?? args.file ?? "?"}`);
+      },
+      renderResult(result: any, opts: any, theme: any, context: any) {
+        const diff = (result.details as any)?.diff as string | undefined;
+        const diffLines = diff?.split("\n") || [];
+        return editTemplate(context.args.path ?? "?", diffLines, opts.expanded, theme);
+      },
+    };
+  }
+
+  // ── Bash (execute template, shell = bash) ────────────────────────
+  if (name === "bash") {
+    return {
+      renderCall(args: any, theme: any, context: any) {
+        if (context.expanded) return noOp();
+        const cmd = args.command ?? "?";
+        const truncated = cmd.split("\n")[0] || cmd;
+        const maxDisplay = 50;
+        const display = truncated.length > maxDisplay ? truncated.slice(0, maxDisplay - 3) + "..." : truncated;
+        return line(orange(theme, "execute") + ` \x1b[38;2;90;180;250m{bash}\x1b[39m ${display}`);
+      },
+      renderResult(result: any, opts: any, theme: any, context: any) {
+        const details = result.details as Record<string, unknown> | undefined;
+        const full = (details?._fullOutput as string) || result.content?.[0]?.text || "";
+        const lines = full.split("\n");
+        const cmd = context.args.command ?? "";
+        return executeTemplate("bash", cmd, lines, opts.expanded, result, theme, {
+          durationS: (details?._durationS as number) ?? -1,
+        });
+      },
+    };
+  }
+
+  // ── Powershell / Pwsh (execute template, shell = pwsh) ──────────
+  if (name === "powershell" || name === "pwsh") {
+    return {
+      renderCall(args: any, theme: any, context: any) {
+        if (context.expanded) return noOp();
+        const cmd = args.command ?? "?";
+        const truncated = cmd.split("\n")[0] || cmd;
+        const maxDisplay = 50;
+        const display = truncated.length > maxDisplay ? truncated.slice(0, maxDisplay - 3) + "..." : truncated;
+        return line(orange(theme, "execute") + ` \x1b[38;2;90;180;250m{pwsh}\x1b[39m ${display}`);
+      },
+      renderResult(result: any, opts: any, theme: any, context: any) {
+        const details = result.details as Record<string, unknown> | undefined;
+        const full = (details?._fullOutput as string) || result.content?.[0]?.text || "";
+        const lines = full.split("\n");
+        const cmd = context.args.command ?? "";
+        return executeTemplate("pwsh", cmd, lines, opts.expanded, result, theme, {
+          durationS: (details?._durationS as number) ?? -1,
+        });
+      },
+    };
+  }
+
+  // ── Run Command (execute template, shell = shell) ────────────────
+  if (name === "run_command") {
+    return {
+      renderCall(args: any, theme: any, context: any) {
+        if (context.expanded) return noOp();
+        return line(orange(theme, "execute") + ` \x1b[38;2;90;180;250m{shell}\x1b[39m ${(args.CommandLine ?? "?").split("\n")[0]}`);
+      },
+      renderResult(result: any, opts: any, theme: any, context: any) {
+        const details = result.details as Record<string, unknown> | undefined;
+        const full = (details?._fullOutput as string) || result.content?.[0]?.text || "";
+        const lines = full.split("\n");
+        const cmd = context.args.CommandLine ?? "";
+        return executeTemplate("shell", cmd, lines, opts.expanded, result, theme, {
+          durationS: (details?._durationS as number) ?? -1,
+        });
+      },
+    };
+  }
+
+  // ── Manage Task (standard template) ────────────────────────────────
+  if (name === "manage_task") {
+    return {
+      renderCall(args: any, theme: any, context: any) {
+        if (context.expanded) return noOp();
+        return line(orange(theme, "Tasks") + ` ${args.Action} ${args.TaskId ?? ""}`.trim());
+      },
+      renderResult(result: any, opts: any, theme: any, context: any) {
+        const full = (result.details as any)?._fullOutput || result.content?.[0]?.text || "";
+        const lines = full.split("\n").filter((l: string) => l.trim());
+        return standardTemplate("manage_task", `${context.args.Action} ${context.args.TaskId ?? ""}`.trim(), lines, opts.expanded, theme, {
+          count: lines.length,
+          unit: "line",
+          isError: result.isError,
+        });
+      },
+    };
+  }
+
+  // ── Schedule (standard template) ─────────────────────────────────
+  if (name === "schedule") {
+    return {
+      renderCall(args: any, theme: any, context: any) {
+        if (context.expanded) return noOp();
+        return line(orange(theme, "Schedule") + ` ${args.DurationSeconds || args.CronExpression || "?"}`);
+      },
+      renderResult(result: any, opts: any, theme: any, context: any) {
+        const full = (result.details as any)?._fullOutput || result.content?.[0]?.text || "";
+        const lines = full.split("\n").filter((l: string) => l.trim());
+        return standardTemplate("schedule", "", lines, opts.expanded, theme, {
+          count: lines.length,
+          unit: "task",
+          isError: result.isError,
+        });
+      },
+    };
+  }
+
+  // ── Web Search (standard template) ────────────────────────────────
+  if (name === "web_search") {
+    return {
+      renderCall(args: any, theme: any, context: any) {
+        if (context.expanded) return noOp();
+        return line(orange(theme, "WebSearch") + ` "${(args.query ?? "").slice(0, 50)}"`);
+      },
+      renderResult(result: any, opts: any, theme: any, context: any) {
+        const full = (result.details as any)?._fullOutput || result.content?.[0]?.text || "";
+        const lines = full.split("\n").filter((l: string) => l.trim());
+        return standardTemplate("web_search", context.args.query ?? "", lines, opts.expanded, theme, {
+          count: lines.length,
+          unit: "result",
+          isError: result.isError,
+        });
+      },
+    };
+  }
+
+  // ── Web Fetch (standard template) ────────────────────────────────
+  if (name === "web_fetch" || name === "fetch_content" || name === "get_search_content") {
+    return {
+      renderCall(args: any, theme: any, context: any) {
+        if (context.expanded) return noOp();
+        return line(orange(theme, "WebFetch") + ` ${(args.url ?? "").slice(0, 60)}`);
+      },
+      renderResult(result: any, opts: any, theme: any, context: any) {
+        const full = (result.details as any)?._fullOutput || result.content?.[0]?.text || "";
+        const lines = full.split("\n").filter((l: string) => l.trim());
+        return standardTemplate("web_fetch", context.args.url ?? "", lines, opts.expanded, theme, {
+          count: lines.length,
+          unit: "line",
+          isError: result.isError,
+        });
+      },
+    };
+  }
+
+  // ── Memory (standard template) ──────────────────────────────────
+  if (name === "memory") {
+    return {
+      renderCall(args: any, theme: any, context: any) {
+        if (context.expanded) return noOp();
+        const action = args.action ?? "?";
+        const target = args.target ?? "";
+        const label = args.content?.slice(0, 60) ?? args.old_text?.slice(0, 60) ?? "";
+        return line(orange(theme, "Memory") + ` ${action}${target ? " (" + target + ")" : ""}${label ? " \u2192 " + label : ""}`);
+      },
+      renderResult(result: any, opts: any, theme: any, context: any) {
+        const full = (result.details as any)?._fullOutput || result.content?.[0]?.text || "";
+        const lines = full.split("\n").filter((l: string) => l.trim());
+        return standardTemplate("memory", "", lines, opts.expanded, theme, {
+          count: lines.length,
+          unit: "entry",
+          isError: result.isError,
+        });
+      },
+    };
+  }
+
+  // ── Memory Search (standard template) ────────────────────────────
+  if (name === "memory_search") {
+    return {
+      renderCall(args: any, theme: any, context: any) {
+        if (context.expanded) return noOp();
+        return line(orange(theme, "MemorySearch") + ` "${(args.query ?? "").slice(0, 50)}"`);
+      },
+      renderResult(result: any, opts: any, theme: any, context: any) {
+        const full = (result.details as any)?._fullOutput || result.content?.[0]?.text || "";
+        const lines = full.split("\n").filter((l: string) => l.trim());
+        return standardTemplate("memory_search", context.args.query ?? "", lines, opts.expanded, theme, {
+          count: lines.length,
+          unit: "result",
+          isError: result.isError,
+        });
+      },
+    };
+  }
+
+  // ── Session Search (standard template) ──────────────────────────
+  if (name === "session_search") {
+    return {
+      renderCall(args: any, theme: any, context: any) {
+        if (context.expanded) return noOp();
+        return line(orange(theme, "SessionSearch") + ` "${(args.query ?? args.markdown ?? "").slice(0, 50)}"`);
+      },
+      renderResult(result: any, opts: any, theme: any, context: any) {
+        const full = (result.details as any)?._fullOutput || result.content?.[0]?.text || "";
+        const lines = full.split("\n").filter((l: string) => l.trim());
+        return standardTemplate("session_search", "", lines, opts.expanded, theme, {
+          count: lines.length,
+          unit: "result",
+          isError: result.isError,
+        });
+      },
+    };
+  }
+
+  // ── Skill Manage (standard template) ─────────────────────────────
+  if (name === "skill_manage") {
+    return {
+      renderCall(args: any, theme: any, context: any) {
+        if (context.expanded) return noOp();
+        return line(orange(theme, "SkillManage") + ` ${args.action ?? "?"}`);
+      },
+      renderResult(result: any, opts: any, theme: any, context: any) {
+        const full = (result.details as any)?._fullOutput || result.content?.[0]?.text || "";
+        const lines = full.split("\n").filter((l: string) => l.trim());
+        return standardTemplate("skill_manage", "", lines, opts.expanded, theme, {
+          count: lines.length,
+          unit: "entry",
+          isError: result.isError,
+        });
+      },
+    };
+  }
+
+  // ── Video Extract (standard template) ───────────────────────────
+  if (name === "video_extract") {
+    return {
+      renderCall(args: any, theme: any, context: any) {
+        if (context.expanded) return noOp();
+        return line(orange(theme, "VideoExtract") + ` ${(args.url ?? "").slice(0, 60)}`);
+      },
+      renderResult(result: any, opts: any, theme: any, context: any) {
+        const details = result.details as any;
+        const title = details?.title || "(no title)";
+        const totalChars = details?.totalChars || 0;
+        const imgCount = details?.imageCount || 0;
+        const lines = [`${title} (${totalChars} chars)`];
+        if (imgCount > 0) lines.push(`${imgCount} image${imgCount !== 1 ? "s" : ""}`);
+        return standardTemplate("video_extract", context.args.url ?? "", lines, opts.expanded, theme, {
+          count: lines.length,
+          unit: "item",
+          isError: result.isError,
+        });
+      },
+    };
+  }
+
+  // ── Generic Fallback ─────────────────────────────────────────────
+  return {
+    renderCall(args: any, theme: any, context: any) {
+      if (context.expanded) return noOp();
+      const argsLine = Object.values(args || {}).map(v => typeof v === 'object' ? JSON.stringify(v) : String(v)).join(" ");
+      return line(orange(theme, capitalizeToolName(name)) + ` ${argsLine.slice(0, 60)}`);
+    },
+    renderResult(result: any, opts: any, theme: any, context: any) {
+      if ((result.details as any)?._isUnknownTool) {
+        return line(orange(theme, capitalizeToolName(name)) + " tool not found");
+      }
+      const full = (result.details as any)?._fullOutput || result.content?.[0]?.text || "";
+      const lines = full.split("\n").filter((l: string) => l.trim());
+      return standardTemplate(name, "", lines, opts.expanded, theme, {
+        count: lines.length,
+        unit: "line",
+        isError: result.isError,
+      });
+    },
+  };
 }
 
 // ── patchTool ──────────────────────────────────────────────────────────
 
 export function patchTool(tool: any): void {
-  const EXCLUDED_TOOLS = new Set(["bash", "ls", "grep", "find", "subagent"]);
+  const EXCLUDED_TOOLS = new Set(["subagent"]);
   if (EXCLUDED_TOOLS.has(tool.name)) return;
-  
+
   // Skip tools that already have custom rendering from their own extensions
-  // (e.g., subagent with CompactToolBox, powershell with its own renderer)
   if (tool.renderShell === "self" && tool.renderResult && !tool.__compactui_patched) return;
 
-  // ── Path Stripping Helper ─────────────────────────────────────────────
-  const PATH_PREFIX = path.join(process.env.HOME || "~", ".pi", "agent") + "/";
-  function stripPath(path: string): string {
-    if (path && path.startsWith(PATH_PREFIX)) {
-      return path.slice(PATH_PREFIX.length);
-    }
-    return path;
-  }
+  const template = resolveTemplate(tool);
+  if (!template) return;
 
-  // ── Read / Write / Edit (path stripping) ──────────────────────────────
-  if (tool.name === "read" || tool.name === "write" || tool.name === "edit") {
-    if (tool.__compactui_patched) return;
-    tool.__compactui_patched = true;
-    tool.renderShell = "self";
-    tool.renderCall = (args: any, theme: any, context: any) => {
-      if (context.expanded) return noOp();
-      const filePath = args.path || args.file || "?";
-      return line(orange(theme, capitalizeToolName(tool.name)) + "(" + stripPath(filePath) + ")");
-    };
-    tool.renderResult = (result: any, opts: any, theme: any, context: any) => {
-      if (result.isError) return compactFailed(theme);
-      if (!opts.expanded) return noOp();
-      // For expanded view, show the full path
-      const filePath = context.args.path || context.args.file || "?";
-      const full = (result.details as any)?._fullOutput || result.content?.[0]?.text || "";
-      const lines = full.split("\n");
-      return expandedBox(theme, tool.name, filePath, lines, 40);
-    };
-    return;
-  }
-
-  // ── Ask Question ───────────────────────────────────────────────────────
-  if (tool.name === "ask_question" || tool.name === "ask_questions" || tool.name === "questions" || tool.name === "question") {
-    if (tool.__compactui_patched) return;
-    tool.__compactui_patched = true;
-    tool.renderShell = "self";
-    tool.renderCall = (args: any, theme: any, context: any) => {
-      if (context.expanded) return noOp();
-      let count = 1;
-      if (args && Array.isArray(args.questions)) count = args.questions.length;
-      return line(orange(theme, capitalizeToolName(tool.name)) + "(asking " + count + ` question${count === 1 ? '' : 's'}` + ")");
-    };
-    tool.renderResult = (result: any, opts: any, theme: any, context: any) => {
-      if (result.isError) return compactFailed(theme);
-      
-      const details = result.details as any;
-      const questions = details?.questions || [];
-      const answers = details?.answers || [];
-      const cancelled = details?.cancelled || false;
-      
-      if (!opts.expanded) {
-        if (cancelled) {
-          return line(DIM_GREY + `\u23bf cancelled` + "\x1b[39m");
-        }
-        const count = answers.length;
-        return line(DIM_GREY + `\u23bf answered ${count} question${count === 1 ? '' : 's'}` + "\x1b[39m");
-      } else {
-        const res: string[] = [];
-        const bullet = '\u25cf ';
-        res.push("  " + bullet + 'User answered ' + capitalizeToolName(tool.name) + ':');
-        
-        // Build question-answer pairs
-        for (let i = 0; i < questions.length; i++) {
-          const q = questions[i];
-          const answer = answers[i];
-          const questionText = q.prompt || q.label || '?';
-          let answerText = 'no answer';
-          if (answer) {
-            if (answer.source === 'custom') {
-              answerText = answer.value || 'custom';
-            } else if (answer.label) {
-              answerText = answer.label;
-            } else if (typeof answer.optionIndex === 'number') {
-              answerText = String(answer.optionIndex + 1);
-            }
-          }
-          const prefix = i === 0 ? "\u23bf " : "   "; // ⎿ (2 cols) + 1 space, subsequent 3 spaces
-          const lineText = `${questionText} \u2192 ${answerText}`;
-          res.push("  " + DIM_GREY + prefix + "\x1b[39m" + "\u00b7 " + lineText);
-        }
-        
-        return new CustomBlock(res) as any;
-      }
-    };
-    return;
-  }
-
-  // ── Pwsh / Powershell ──────────────────────────────────────────────────
-  if (tool.name === "powershell" || tool.name === "pwsh") {
-    if (tool.__compactui_patched) return;
-    tool.__compactui_patched = true;
-    tool.renderShell = "self";
-    tool.renderCall = (args: any, theme: any, context: any) => {
-      if (context.expanded) return noOp();
-      return compactCall("powershell", args.command ?? "?", theme);
-    };
-    tool.renderResult = (result: any, opts: any, theme: any, context: any) => {
-      const details = result.details as Record<string, unknown> | undefined;
-      const full = (details?._fullOutput as string) || result.content?.[0]?.text || "";
-      const lines = full.split("\n");
-      if (!opts.expanded) {
-        if (result.isError) return compactFailed(theme);
-        return compactSummary(theme, "Output", lines.length, "line", full);
-      }
-
-      return expandedBox(theme, "powershell", context.args.command ?? "", lines, 40);
-    };
-    return;
-  }
-
-  // ── Run Command ─────────────────────────────────────────────────────────
-  if (tool.name === "run_command") {
-    if (tool.__compactui_patched) return;
-    tool.__compactui_patched = true;
-    tool.renderShell = "self";
-    tool.renderCall = (args: any, theme: any, context: any) => {
-      if (context.expanded) return noOp();
-      return compactCall("run_command", args.CommandLine as string || "?", theme);
-    };
-    tool.renderResult = (result: any, opts: any, theme: any, context: any) => {
-      const details = result.details as Record<string, unknown> | undefined;
-      const full = (details?._fullOutput as string) || result.content?.[0]?.text || "";
-      const lines = full.split("\n");
-      if (!opts.expanded) {
-        if (result.isError) return compactFailed(theme);
-        return compactSummary(theme, "Output", lines.length, "line", full);
-      }
-      return expandedBox(theme, "run_command", context.args.CommandLine ?? "", lines, 40);
-    };
-    return;
-  }
-
-  // ── Web Search ─────────────────────────────────────────────────────────
-  if (tool.name === "web_search") {
-    if (tool.__compactui_patched) return;
-    tool.__compactui_patched = true;
-    tool.renderShell = "self";
-    tool.renderCall = (args: any, theme: any, context: any) => {
-      if (context.expanded) return noOp();
-      return compactCall("web_search", (args.query as string) || "?", theme);
-    };
-    tool.renderResult = (result: any, opts: any, theme: any, context: any) => {
-      const details = result.details as Record<string, unknown> | undefined;
-      const full = (details?._fullOutput as string) || result.content?.[0]?.text || "";
-      const lines = full.split("\n");
-      if (!opts.expanded) {
-        if (result.isError) return compactFailed(theme);
-        return compactSummary(theme, "Found", lines.length, "result", full);
-      }
-      return expandedBox(theme, "web_search", context.args.query ?? "", lines, 40);
-    };
-    return;
-  }
-
-  // ── Web Fetch / Fetch Content ──────────────────────────────────────────
-  if (tool.name === "web_fetch" || tool.name === "fetch_content") {
-    if (tool.__compactui_patched) return;
-    tool.__compactui_patched = true;
-    tool.renderShell = "self";
-    tool.renderCall = (args: any, theme: any, context: any) => {
-      if (context.expanded) return noOp();
-      return compactCall(tool.name, (args.url as string) || "?", theme);
-    };
-    tool.renderResult = (result: any, opts: any, theme: any, context: any) => {
-      const details = result.details as Record<string, unknown> | undefined;
-      const full = (details?._fullOutput as string) || result.content?.[0]?.text || "";
-      const lines = full.split("\n");
-      if (!opts.expanded) {
-        if (result.isError) return compactFailed(theme);
-        return compactSummary(theme, "Fetched", lines.length, "line", full);
-      }
-      return expandedBox(theme, tool.name, context.args.url ?? "", lines, 40);
-    };
-    return;
-  }
-
-  // ── Manage Task ────────────────────────────────────────────────────────
-  if (tool.name === "manage_task") {
-    if (tool.__compactui_patched) return;
-    tool.__compactui_patched = true;
-    tool.renderShell = "self";
-    tool.renderCall = (args: any, theme: any, context: any) => {
-      if (context.expanded) return noOp();
-      return compactCall("manage_task", `${args.Action} ${args.TaskId || ""}`.trim(), theme);
-    };
-    tool.renderResult = (result: any, opts: any, theme: any, context: any) => {
-      const details = result.details as Record<string, unknown> | undefined;
-      const full = (details?._fullOutput as string) || result.content?.[0]?.text || "";
-      if (!opts.expanded) {
-        if (result.isError) return compactFailed(theme);
-        const taskCount = full.includes("TaskId") || full.includes("task") ? 1 : 0;
-        return compactSummary(theme, "Checked", taskCount, "task", full);
-      }
-      const lines = full.split("\n");
-      return expandedBox(theme, "manage_task", `${context.args.Action} ${context.args.TaskId || ""}`.trim(), lines, 40);
-    };
-    return;
-  }
-
-  // ── Schedule ───────────────────────────────────────────────────────────
-  if (tool.name === "schedule") {
-    if (tool.__compactui_patched) return;
-    tool.__compactui_patched = true;
-    tool.renderShell = "self";
-    tool.renderCall = (args: any, theme: any, context: any) => {
-      if (context.expanded) return noOp();
-      let argsLine = "";
-      if (args.DurationSeconds) argsLine = `${args.DurationSeconds}s "${args.Prompt}"`;
-      else if (args.CronExpression) argsLine = `cron "${args.CronExpression}" "${args.Prompt}"`;
-      return compactCall("schedule", argsLine, theme);
-    };
-    tool.renderResult = (result: any, opts: any, theme: any, context: any) => {
-      const details = result.details as Record<string, unknown> | undefined;
-      const full = (details?._fullOutput as string) || result.content?.[0]?.text || "";
-      if (!opts.expanded) {
-        if (result.isError) return compactFailed(theme);
-        const taskCount = full.includes("timerId") || full.includes("cronId") || full.includes("scheduled") ? 1 : 0;
-        return compactSummary(theme, "Scheduled", taskCount, "task", full);
-      }
-      const lines = full.split("\n");
-      let argsLine = "";
-      if (context.args.DurationSeconds) argsLine = `${context.args.DurationSeconds}s "${context.args.Prompt}"`;
-      else if (context.args.CronExpression) argsLine = `cron "${context.args.CronExpression}" "${context.args.Prompt}"`;
-      return expandedBox(theme, "schedule", argsLine, lines, 40);
-    };
-    return;
-  }
-
-  // ── Generic Fallback ───────────────────────────────────────────────────
   if (tool.__compactui_patched) return;
   tool.__compactui_patched = true;
   tool.renderShell = "self";
-
-  tool.renderCall = (args: any, theme: any, context: any) => {
-    if (context.expanded) return noOp();
-    const argsLine = Object.values(args || {}).map(v => typeof v === 'object' ? JSON.stringify(v) : String(v)).join(" ");
-    return compactCall(tool.name, argsLine, theme);
-  };
-
-  tool.renderResult = (result: any, opts: any, theme: any, context: any) => {
-    if ((result.details as any)?._isUnknownTool) {
-      const toolName = tool.name || (context.args as any)?.name || "unknown";
-      return line(orange(theme, capitalizeToolName(toolName)) + " " + theme.fg("error", "tool not found"));
-    }
-
-    const argsLine = Object.values(context.args || {}).map(v => typeof v === 'object' ? JSON.stringify(v) : String(v)).join(" ");
-    const content = result.content?.[0];
-    const text = content?.type === "text" ? content.text : "";
-    const lines = text.split("\n").filter((l: string) => l.trim());
-
-    if (!opts.expanded) {
-      if (result.isError) return compactFailed(theme);
-      
-      // Detect memory operations and show appropriate summary
-      let summary = "output";
-      let unit = "line";
-      if (tool.name === "memory") {
-        const action = (context.args as any)?.action || "";
-        const target = (context.args as any)?.target || "";
-        if (action === "add") {
-          summary = "Added";
-          unit = target === "memory" ? "memory" : "entry";
-        } else if (action === "replace") {
-          summary = "Edited";
-          unit = target === "memory" ? "memory" : "entry";
-        } else if (action === "remove") {
-          summary = "Removed";
-          unit = target === "memory" ? "memory" : "entry";
-        }
-      }
-      
-      return compactSummary(theme, summary, lines.length, unit, text);
-    }
-
-    return expandedBox(theme, tool.name, argsLine, lines, 40);
-  };
+  tool.renderCall = template.renderCall;
+  tool.renderResult = template.renderResult;
 }

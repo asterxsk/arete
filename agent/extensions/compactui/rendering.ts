@@ -1,69 +1,59 @@
 /**
- * rendering.ts — Shared rendering primitives for compactui
+ * rendering.ts — Unified tool rendering templates for compactui
  *
- * Compact tool rendering helpers: line components, orange tool names,
- * compact call/result, expanded box, diff display, duration formatting.
+ * Template-based rendering system replacing per-tool renderCall/renderResult.
+ * All tools use one of these templates:
+ *
+ * standardTemplate — read, memory, web_search, tasks, timers, session_search, etc.
+ *   collapsed: toolname N unit
+ *   detail ↳ first line of detail
+ *   expanded: shows all detail lines with ↳ prefix
+ *
+ * writeTemplate — write tool
+ *   collapsed: write path
+ *             ↳ N lines
+ *             1 content line
+ *             2 content line
+ *             ... N more lines ctrl+o to expand
+ *   expanded: full content with line numbers
+ *
+ * editTemplate — edit tool
+ *   collapsed: edit path
+ *             ↳ Added N, removed M
+ *             colored +/- diff lines
+ *   expanded: full diff with +/- coloring
+ *
+ * executeTemplate — bash, powershell, run_command
+ *   collapsed: execute {bash/pwsh} cmd
+ *             first 5 output lines
+ *             ... N more lines ctrl+o to expand
+ *   expanded: full output with duration footer
+ *
+ * subagentTemplate — subagent tool
+ *   collapsed: agentName N working M done
+ *             ↳ per-agent summaries
+ *   expanded: full status
  */
 
 import { type Component, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 // ── Constants ──────────────────────────────────────────────────────────
 
-export const INDENT = " "; // Single space indent for tools
-export const HINT = " (ctrl+o to expand)";
-export const DIM_GREY = "\x1b[38;2;140;140;140m"; // Consistent dim color for all tool summaries
+export const INDENT = " ";
+export const DIM_GREY = "\x1b[38;2;140;140;140m";
 
-// ── Component Factories ────────────────────────────────────────────────
-
-export function line(text: string): Component {
-  return {
-    render(width) {
-      return [truncateToWidth(text, width, "...")];
-    },
-    invalidate() {},
-  };
-}
-
-/** Blank spacer line used for uniform element spacing. */
-export function spacer(): Component {
-  return {
-    __compactui_spacer: true,
-    render() {
-      return [""];
-    },
-    invalidate() {},
-  };
-}
-
-/** No-op component that renders nothing (avoids extra newline). */
-export function noOp(): Component {
-  return {
-    render() { return []; },
-    invalidate() {},
-  };
-}
+// ── Helpers ────────────────────────────────────────────────────────────
 
 export function orange(theme: any, text: string): string {
   return `\x1b[38;2;250;179;135m${text}\x1b[39m`;
 }
 
-/** Convert tool_name to Title Case: run_command → Run Command */
 export function capitalizeToolName(toolName: string): string {
-  // Special case: edit → Update
   if (toolName === 'edit') return 'Update';
   return toolName
     .split('_')
     .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
     .join(' ');
-}
-
-export function compactCall(toolName: string, argsStr: string, theme: any): Component {
-  let display = argsStr.split("\n")[0] ?? argsStr;
-  const maxDisplay = 40;
-  if (display.length > maxDisplay) display = display.slice(0, maxDisplay - 3) + "...";
-  else if (display.length < argsStr.length) display += "...";
-  const capitalizedName = capitalizeToolName(toolName);
-  return line(INDENT + orange(theme, capitalizedName) + "(" + display + ")");
 }
 
 export function getCommandName(cmd: string): string {
@@ -83,56 +73,14 @@ export function getCommandName(cmd: string): string {
   return base || "command";
 }
 
-export function compactSummary(theme: any, summary: string, count: number, unit: string, fullOutput?: string): Component {
-  const PREVIEW_LINES = 3;
-  const lines = fullOutput ? fullOutput.split("\n").filter(l => l.trim()) : [];
-  const showPreview = lines.length > 0;
-  const previewLines = lines.slice(0, PREVIEW_LINES);
-  const remaining = count > PREVIEW_LINES ? count - PREVIEW_LINES : 0;
-  
-  const components: Component[] = [];
-  
-  if (showPreview) {
-    // Show first 3 lines of output
-    for (let i = 0; i < previewLines.length; i++) {
-      const prefix = i === 0 ? INDENT + DIM_GREY + "\u23bf  " : INDENT + "   ";
-      const lineText = previewLines[i];
-      // Truncate long lines — use visibleWidth to skip ANSI escape bytes
-      const maxLen = 80;
-      const truncated = visibleWidth(lineText) > maxLen ? lineText.slice(0, maxLen - 3) + "..." : lineText;
-      components.push(line(prefix + "\x1b[97m" + truncated + "\x1b[39m"));
-    }
-    // Show truncation message
-    if (remaining > 0) {
-      components.push(line(INDENT + "  " + DIM_GREY + "... " + remaining + " more lines (ctrl+o to expand)\x1b[39m"));
-    }
-  } else {
-    // Fallback to summary
-    const countStr = count > 0 ? `${count} ${unit}${count !== 1 ? "s" : ""}` : "no output";
-    components.push(line(INDENT + DIM_GREY + "\u23bf " + countStr + " of output\x1b[39m"));
-  }
-  
-  return {
-    render(width: number) {
-      return components.flatMap(c => c.render(width));
-    },
-    invalidate() {},
-  };
+function formatDur(s: number): string {
+  if (s < 0.01) return "0.0s";
+  if (s < 60) return s.toFixed(1) + "s";
+  return Math.floor(s / 60) + "m " + Math.floor(s % 60) + "s";
 }
 
-export function compactFailed(theme: any): Component {
-  return line(INDENT + DIM_GREY + "\u23bf failed tool call" + "\x1b[39m");
-}
+// ── ANSI wrap helper ───────────────────────────────────────────────────
 
-
-
-// ── ANSI prefix/content splitting (shared by wrapWithPrefix & wrapDiffLine) ──
-
-/**
- * Walk a raw ANSI string, splitting into the ANSI-prefixed portion up to
- * `prefixLen` visible characters, and the remaining content string.
- * Returns [ansiPrefix, contentStr].
- */
 function splitAnsiPrefix(rl: string, prefixLen: number): [string, string] {
   let ansiPrefix = "";
   let contentStr = "";
@@ -156,17 +104,10 @@ function splitAnsiPrefix(rl: string, prefixLen: number): [string, string] {
   return [ansiPrefix, contentStr];
 }
 
-// ── Wrap with Prefix (for expanded box lines) ──────────────────────────
-
-export function wrapWithPrefix(rl: string, width: number): string[] {
+function wrapWithPrefix(rl: string, width: number): string[] {
   const visible = rl.replace(/\x1b\[[0-9;]*m/g, "");
-  // Match prefix: leading spaces + ⎿ (U+23BF) or │ or └ + trailing spaces
-  // This handles formats like " ⎿ " or " │ " or "└ " or just "│ "
   const boxMatch = visible.match(/^(\s*[\u23BF\u2502\u2514]\s*)/);
-
   if (!boxMatch || boxMatch[1].length === 0) {
-    // No box-drawing char — check for plain leading-spaces prefix (continuation lines)
-    // e.g. "   content" where the 3 leading spaces are the indent
     const spaceMatch = visible.match(/^(\s+)/);
     if (!spaceMatch || spaceMatch[1].length === 0) return wrapTextWithAnsi(rl, width);
     const prefixLen = spaceMatch[1].length;
@@ -181,307 +122,220 @@ export function wrapWithPrefix(rl: string, width: number): string[] {
     }
     return result;
   }
-
   const prefixLen = boxMatch[1].length;
   const [ansiPrefix, contentStr] = splitAnsiPrefix(rl, prefixLen);
-
-  // Check if content starts with line number (e.g., "   59  content")
-  // If so, continuation lines should not repeat the line number
-  const lineNumMatch = contentStr.match(/^(\s*\d+\s{2})/);
-  const lineNumLen = lineNumMatch ? lineNumMatch[1].length : 0;
-  const contentWithoutLineNum = lineNumMatch ? contentStr.slice(lineNumLen) : contentStr;
-  
-  // Content width with 2-char right margin
   const contentWidth = Math.max(10, width - prefixLen - 2);
-  const wrappedContent = wrapTextWithAnsi(contentWithoutLineNum, contentWidth);
+  const wrappedContent = wrapTextWithAnsi(contentStr, contentWidth);
   if (wrappedContent.length === 0) return [ansiPrefix];
-
-  const result = [ansiPrefix + (lineNumMatch ? lineNumMatch[1] : "") + wrappedContent[0]];
-  // Subsequent lines: replace box-drawing char with space, keep trailing spaces
-  // Do NOT include line number on continuation lines
+  const result = [ansiPrefix + wrappedContent[0]];
   const subsequentPrefix = boxMatch[1].replace(/[\u23BF\u2502\u2514]/g, " ");
   for (let j = 1; j < wrappedContent.length; j++) {
-    result.push(subsequentPrefix + " ".repeat(lineNumLen) + wrappedContent[j]);
+    result.push(subsequentPrefix + wrappedContent[j]);
   }
   return result;
 }
 
-// ── Expanded Box ───────────────────────────────────────────────────────
+// ── Generic Template Component ────────────────────────────────────────
 
-export function expandedBox(theme: any, headerName: string, argsLine: string, lines: string[], limit: number, moreSuffix = ""): Component {
-  const show = lines.slice(0, limit);
-  const hasMore = lines.length > limit;
+class TemplateComponent {
+  _plainText: string;
+  constructor(private renderFn: (width: number) => string[], plainText: string) {
+    this._plainText = plainText;
+  }
+  render(width: number): string[] {
+    try { return this.renderFn(width); } catch (e: any) { return [`\x1b[31mError rendering: ${e.message}\x1b[39m`]; }
+  }
+  invalidate() {}
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// TEMPLATE 1: Standard Tool
+// ══════════════════════════════════════════════════════════════════════
+//
+// collapsed:
+//   toolname N unit
+//   ↳ first detail line
+//   ... N more lines ctrl+o to expand
+//
+// expanded:
+//   toolname(args)
+//   ⎿ first detail line
+//   second detail line
+//   ... N more
+
+export function standardTemplate(
+  toolName: string,
+  label: string,
+  detailLines: string[],
+  expanded: boolean,
+  theme: any,
+  options?: {
+    count?: number;
+    unit?: string;
+    maxPreview?: number;
+    maxExpanded?: number;
+    isError?: boolean;
+  },
+): Component {
+  const count = options?.count ?? detailLines.length;
+  const unit = options?.unit ?? "line";
+  const PREVIEW_MAX = options?.maxPreview ?? 3;
+  const EXPANDED_MAX = options?.maxExpanded ?? 40;
+  const cappedName = capitalizeToolName(toolName);
+
+  // Collapsed view
+  const previewLines = detailLines.slice(0, PREVIEW_MAX).filter(l => l.trim());
+  const remaining = Math.max(0, count - PREVIEW_MAX);
+  const hasContent = detailLines.length > 0;
+  const countStr = count > 0 ? `${count} ${unit}${count !== 1 ? "s" : ""}` : "no output";
+
+  if (!expanded) {
+    const collapsedLines: string[] = [];
+    collapsedLines.push(INDENT + orange(theme, cappedName) + ` ${countStr}`);
+
+    if (options?.isError) {
+      collapsedLines.push(INDENT + DIM_GREY + "\u23bf failed tool call" + "\x1b[39m");
+      return line(collapsedLines.join("\n"));
+    }
+
+    if (hasContent) {
+      for (let i = 0; i < previewLines.length; i++) {
+        const prefix = i === 0 ? INDENT + DIM_GREY + "\u23bf  " : INDENT + "   ";
+        const maxLen = 80;
+        const truncated = visibleWidth(previewLines[i]) > maxLen ? previewLines[i].slice(0, maxLen - 3) + "..." : previewLines[i];
+        collapsedLines.push(prefix + "\x1b[97m" + truncated + "\x1b[39m");
+      }
+      if (remaining > 0) {
+        collapsedLines.push(INDENT + "  " + DIM_GREY + "... " + remaining + " more lines (ctrl+o to expand)\x1b[39m");
+      }
+    } else {
+      collapsedLines.push(INDENT + DIM_GREY + "\u23bf " + countStr + "\x1b[39m");
+    }
+
+    return line(collapsedLines.join("\n"));
+  }
+
+  // Expanded view
+  const show = detailLines.slice(0, EXPANDED_MAX);
+  const hasMore = detailLines.length > EXPANDED_MAX;
   const raw: string[] = [];
-  let moreLine = "";
-  const capitalizedName = capitalizeToolName(headerName);
+  raw.push(orange(theme, cappedName) + "(" + label + ")");
 
-  // Output lines: ⎿ on first line, spaces on following lines
-  // No padding - header is also at position 0
   for (let i = 0; i < show.length; i++) {
-    // ⎿ is 1 char, ⎿ + 2 spaces = 3 chars total, same as 3 spaces on subsequent lines
-    const prefix = i === 0 ? "\u23bf  " : "   "; // ⎿ + 2 spaces, subsequent lines 3 spaces
-    raw.push(prefix + theme.fg("text", show[i]));
+    const prefix = i === 0 ? "\u23bf  " : "   ";
+    raw.push(prefix + (show[i] || ""));
   }
 
   if (hasMore) {
-    const moreText = moreSuffix ? " more " + moreSuffix : " more";
-    moreLine = DIM_GREY + "... " + (lines.length - limit) + moreText + "\x1b[39m";
+    raw.push(DIM_GREY + "... " + (detailLines.length - EXPANDED_MAX) + " more " + unit + "s" + "\x1b[39m");
   }
 
-  // Store plain text version for copy/paste
-  const plainTextLines = [capitalizedName + "(" + argsLine + ")"];
-  for (const line of show) {
-    plainTextLines.push(line);
-  }
-  if (hasMore) {
-    const moreTextPt = moreSuffix ? " more " + moreSuffix : " more";
-    plainTextLines.push("... " + (lines.length - limit) + moreTextPt);
-  }
-
-  class GenericComponent {
-    _plainText: string;
-    constructor(private renderFn: (width: number) => string[], plainText: string) {
-      this._plainText = plainText;
-    }
-    render(width: number): string[] {
-      try { return this.renderFn(width); } catch (e: any) { return [`\x1b[31mError rendering: ${e.message}\x1b[39m`]; }
-    }
-    invalidate() {}
-    handleInput() {}
-  }
-
-  return new GenericComponent((width: number) => {
-      const result: string[] = [];
-      const headerPrefix = orange(theme, capitalizedName) + "(";
-      // NOTE: headerPrefixWidth must track *visible* width (plain text characters),
-      // not the ANSI-escaped string length, since it is used to compute
-      // available wrapping width via subtraction from the terminal width.
-      const headerPrefixWidth = capitalizedName.length + 1;
-      const argsWidth = Math.max(10, width - headerPrefixWidth - 1);
-
-      const cleanArgsLine = argsLine.replace(/\r/g, "").replace(/^\n+/, "");
-      const wrappedArgs = wrapTextWithAnsi(cleanArgsLine, argsWidth);
-      if (cleanArgsLine.length === 0) {
-        // No args - just show header without brackets
-        result.push(truncateToWidth(orange(theme, capitalizedName), width));
-      } else if (wrappedArgs.length === 0) {
-        result.push(truncateToWidth(headerPrefix + ")", width));
-      } else {
-        for (let i = 0; i < wrappedArgs.length; i++) {
-          if (i === 0) {
-            const suffix = wrappedArgs.length === 1 ? ")" : "";
-            result.push(truncateToWidth(headerPrefix + wrappedArgs[i] + suffix, width));
-          } else {
-            const prefix = " ".repeat(headerPrefixWidth);
-            const suffix = i === wrappedArgs.length - 1 ? ")" : "";
-            result.push(truncateToWidth(prefix + wrappedArgs[i] + suffix, width));
-          }
-        }
-      }
-
-      for (const rl of raw) {
-        if (!rl) result.push("");
-        else if (visibleWidth(rl) <= width) result.push(rl);
-        else result.push(...wrapWithPrefix(rl, width));
-      }
-      // Append more line separately — never with ⎿ prefix
-      if (moreLine) {
-        if (visibleWidth(moreLine) <= width) result.push(moreLine);
-        else result.push(...wrapTextWithAnsi(moreLine, width));
-      }
-      return result;
-  }, plainTextLines.join("\n"));
-}
-
-// ── Diff Coloring ──────────────────────────────────────────────────────
-
-export function colorizeDiffLine(theme: any, line: string): string {
-  // ── Format A: "NNN + content" or "NNN - content" (number, space, sign, space, content)
-  // This is the pi edit tool's format for changed lines
-  const numSignMatch = line.match(/^( *\d+) ([+\-]) (.*)$/);
-  if (numSignMatch) {
-    const num = numSignMatch[1].trim().padStart(3, " ");
-    const sign = numSignMatch[2];
-    const rest = numSignMatch[3];
-    if (sign === '+') {
-      const greenText = "\x1b[38;2;160;240;160m";
-      const greenBg = "\x1b[48;2;20;60;20m";
-      return `${DIM_GREY}${num}\x1b[39m ${greenBg}${greenText}+${rest}\x1b[49m\x1b[39m`;
-    }
-    const redText = "\x1b[38;2;240;160;160m";
-    const redBg = "\x1b[48;2;60;20;20m";
-    return `${DIM_GREY}${num}\x1b[39m ${redBg}${redText}-${rest}\x1b[49m\x1b[39m`;
-  }
-
-  // ── Format A2: "NNN +" or "NNN -" (sign with no content — empty added/removed line)
-  const numSignEmptyMatch = line.match(/^( *\d+) ([+\-])$/);
-  if (numSignEmptyMatch) {
-    const num = numSignEmptyMatch[1].trim().padStart(3, " ");
-    const sign = numSignEmptyMatch[2];
-    if (sign === '+') {
-      const greenText = "\x1b[38;2;160;240;160m";
-      const greenBg = "\x1b[48;2;20;60;20m";
-      return `${DIM_GREY}${num}\x1b[39m ${greenBg}${greenText}+\x1b[49m\x1b[39m`;
-    }
-    const redText = "\x1b[38;2;240;160;160m";
-    const redBg = "\x1b[48;2;60;20;20m";
-    return `${DIM_GREY}${num}\x1b[39m ${redBg}${redText}-\x1b[49m\x1b[39m`;
-  }
-
-  // ── Format B: "NNN content" (number, space, content — context line, no sign)
-  const numContextMatch = line.match(/^( *\d+) (.+)$/);
-  if (numContextMatch) {
-    const num = numContextMatch[1].trim().padStart(3, " ");
-    const rest = numContextMatch[2];
-    return `${DIM_GREY}${num}\x1b[39m  ${rest}`;
-  }
-
-  // ── Format C: bare number — "NNN" or "NNN " (empty context line)
-  const numBareMatch = line.match(/^( *\d+) *$/);
-  if (numBareMatch) {
-    const num = numBareMatch[1].trim().padStart(3, " ");
-    return `${DIM_GREY}${num}\x1b[39m`;
-  }
-
-  // ── Format D: sign-first — "+ 59 content" or "- 59 content"
-  const signFirstMatch = line.match(/^([+\-]) *(\d+)(.*)$/);
-  if (signFirstMatch) {
-    const sign = signFirstMatch[1];
-    const num = signFirstMatch[2].padStart(3, " ");
-    const rest = signFirstMatch[3];
-    if (sign === '+') {
-      const greenText = "\x1b[38;2;160;240;160m";
-      const greenBg = "\x1b[48;2;20;60;20m";
-      return `${DIM_GREY}${num}\x1b[39m ${greenBg}${greenText}+${rest}\x1b[49m\x1b[39m`;
-    }
-    const redText = "\x1b[38;2;240;160;160m";
-    const redBg = "\x1b[48;2;60;20;20m";
-    return `${DIM_GREY}${num}\x1b[39m ${redBg}${redText}-${rest}\x1b[49m\x1b[39m`;
-  }
-
-  // ── Format E: standard unified diff (no line numbers): "+added", "-removed"
-  if (line.startsWith('+')) {
-    const greenText = "\x1b[38;2;160;240;160m";
-    const greenBg = "\x1b[48;2;20;60;20m";
-    return `${greenBg}${greenText}+${line.slice(1)}\x1b[49m\x1b[39m`;
-  }
-  if (line.startsWith('-')) {
-    const redText = "\x1b[38;2;240;160;160m";
-    const redBg = "\x1b[48;2;60;20;20m";
-    return `${redBg}${redText}-${line.slice(1)}\x1b[49m\x1b[39m`;
-  }
-
-  return theme.fg("text", line);
-}
-
-/**
- * Wrap a diff line with proper indentation for continuation lines.
- * For numbered diffs: "   NNN +" → continuation "         +"
- * For standard unified diffs: "+content" → continuation "+"
- */
-export function wrapDiffLine(rl: string, width: number): string[] {
-  const visible = rl.replace(/\x1b\[[0-9;]*m/g, "");
-
-  // Match numbered diff prefix: spaces + line number + space + sign
-  // e.g., "   59 +" or "   59 -" or "   59  "
-  const numberedMatch = visible.match(/^(\s*\d+\s*)([+\- ])/);
-  if (numberedMatch && numberedMatch[1].length > 0) {
-    const numAndSpaces = numberedMatch[1];
-    const sign = numberedMatch[2];
-    const prefixLen = numAndSpaces.length + 1; // +1 for the sign
-
-    const [ansiPrefix, contentStr] = splitAnsiPrefix(rl, prefixLen);
-
-    // Content width with 2-char right margin
-    const contentWidth = Math.max(10, width - prefixLen - 2);
-    const wrappedContent = wrapTextWithAnsi(contentStr, contentWidth);
-    if (wrappedContent.length === 0) return [ansiPrefix];
-
-    const signBg = sign === '+'
-      ? "\x1b[48;2;20;60;20m"
-      : sign === '-'
-        ? "\x1b[48;2;60;20;20m"
-        : "";
-    const signFg = sign === '+'
-      ? "\x1b[38;2;160;240;160m"
-      : sign === '-'
-        ? "\x1b[38;2;240;160;160m"
-        : "";
-
-    const firstLine = ansiPrefix + wrappedContent[0] + (signBg ? "\x1b[49m\x1b[39m" : "");
-    const result = [firstLine];
-
-    // Subsequent lines: no line number, just spaces + colored space instead of sign
-    const subsequentPrefix = " ".repeat(numAndSpaces.length) + 
-      (signBg ? `${signBg}${signFg} ` : "   ");
-
-    for (let j = 1; j < wrappedContent.length; j++) {
-      const lineText = subsequentPrefix + wrappedContent[j] + (signBg ? "\x1b[49m\x1b[39m" : "");
-      result.push(lineText);
+  return new TemplateComponent((width: number) => {
+    const result: string[] = [];
+    for (const rl of raw) {
+      if (!rl) result.push("");
+      else if (visibleWidth(rl) <= width) result.push(rl);
+      else result.push(...wrapWithPrefix(rl, width));
     }
     return result;
-  }
-
-  // Standard unified diff format (no line numbers): colored sign is first visible char
-  const signMatch = visible.match(/^([+\- ])/);
-  if (signMatch) {
-    const sign = signMatch[1];
-    const prefixLen = 1; // just the sign char
-    const [ansiPrefix, contentStr] = splitAnsiPrefix(rl, prefixLen);
-    const contentWidth = Math.max(10, width - prefixLen - 2);
-    const wrappedContent = wrapTextWithAnsi(contentStr, contentWidth);
-    if (wrappedContent.length === 0) return [ansiPrefix];
-
-    const signBg = sign === '+'
-      ? "\x1b[48;2;20;60;20m"
-      : sign === '-'
-        ? "\x1b[48;2;60;20;20m"
-        : "";
-
-    const firstLine = ansiPrefix + wrappedContent[0] + (signBg ? "\x1b[49m\x1b[39m" : "");
-    const result = [firstLine];
-    
-    // Continuation: replace sign with space in ansiPrefix
-    const subsequentPrefix = ansiPrefix.replace(/([+\-])/, " ");
-    for (let j = 1; j < wrappedContent.length; j++) {
-      const lineText = subsequentPrefix + wrappedContent[j] + (signBg ? "\x1b[49m\x1b[39m" : "");
-      result.push(lineText);
-    }
-    return result;
-  }
-
-  return wrapTextWithAnsi(rl, width);
+  }, [cappedName + "(" + label + ")", ...detailLines].join("\n"));
 }
 
-function padBackground(line: string, width: number): string {
-  const w = visibleWidth(line);
-  if (w >= width) return line;
-  const padding = " ".repeat(width - w);
-  if (line.includes("\x1b[48;")) {
-    if (line.endsWith("\x1b[49m\x1b[39m")) {
-      return line.slice(0, -10) + padding + "\x1b[49m\x1b[39m";
-    }
-    if (line.endsWith("\x1b[39m\x1b[49m")) {
-      return line.slice(0, -10) + padding + "\x1b[39m\x1b[49m";
-    }
-    if (line.endsWith("\x1b[49m")) {
-      return line.slice(0, -5) + padding + "\x1b[49m";
-    }
-  }
-  return line + padding;
-}
+// ══════════════════════════════════════════════════════════════════════
+// TEMPLATE 2: Write Tool
+// ══════════════════════════════════════════════════════════════════════
+//
+// collapsed:
+//   write path
+//   ↳ N lines
+//   1 content line with number
+//   2 content line
+//   ... N more lines ctrl+o to expand
+//
+// expanded:
+//   write(path)
+//   full content with line numbers
 
-export function diffExpandedBox(theme: any, headerName: string, argsLine: string, lines: string[], limit: number, moreSuffix = ""): Component {
-  const show = lines.slice(0, limit);
-  const hasMore = lines.length > limit;
+export function writeTemplate(
+  path: string,
+  contentLines: string[],
+  expanded: boolean,
+  theme: any,
+): Component {
+  const lineCount = contentLines.length;
+  const PREVIEW_LINES = 5;
+  const MAX_EXPANDED = 50;
+
+  if (!expanded) {
+    const collapsedLines: string[] = [];
+    collapsedLines.push(INDENT + orange(theme, "Write") + ` ${path}`);
+    collapsedLines.push(INDENT + DIM_GREY + "\u23bf " + lineCount + " line" + (lineCount !== 1 ? "s" : "") + "\x1b[39m");
+
+    const previewLines = contentLines.slice(0, PREVIEW_LINES);
+    for (let i = 0; i < previewLines.length; i++) {
+      const num = String(i + 1).padStart(4, " ");
+      const maxLen = 80;
+      const truncated = visibleWidth(previewLines[i]) > maxLen ? previewLines[i].slice(0, maxLen - 3) + "..." : previewLines[i];
+      collapsedLines.push(INDENT + DIM_GREY + `${num}\x1b[39m  \x1b[97m` + truncated + "\x1b[39m");
+    }
+    if (lineCount > PREVIEW_LINES) {
+      const remaining = lineCount - PREVIEW_LINES;
+      collapsedLines.push(INDENT + "  " + DIM_GREY + "... " + remaining + " more lines (ctrl+o to expand)\x1b[39m");
+    }
+
+    return line(collapsedLines.join("\n"));
+  }
+
+  // Expanded view
+  const show = contentLines.slice(0, MAX_EXPANDED);
   const raw: string[] = [];
-  let moreLine = "";
-  const capitalizedName = capitalizeToolName(headerName);
+  raw.push(orange(theme, "Write") + "(" + path + ")");
 
-  // Count added/removed lines from diff (exclude hunk headers +++/---)
+  for (let i = 0; i < show.length; i++) {
+    const num = String(i + 1).padStart(4, " ");
+    raw.push(DIM_GREY + `${num}\x1b[39m  ${show[i]}`);
+  }
+
+  if (contentLines.length > MAX_EXPANDED) {
+    raw.push(DIM_GREY + "... " + (contentLines.length - MAX_EXPANDED) + " more lines\x1b[39m");
+  }
+
+  return new TemplateComponent((width: number) => {
+    const result: string[] = [];
+    for (const rl of raw) {
+      if (!rl) result.push("");
+      else if (visibleWidth(rl) <= width) result.push(rl);
+      else result.push(...wrapWithPrefix(rl, width));
+    }
+    return result;
+  }, ["Write(" + path + ")", ...contentLines].join("\n"));
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// TEMPLATE 3: Edit Tool
+// ══════════════════════════════════════════════════════════════════════
+//
+// collapsed:
+//   edit path
+//   ↳ Added N lines, removed M lines
+//   colored +/- diff lines (3 lines)
+//   ... N more lines ctrl+o to expand
+//
+// expanded:
+//   edit(path)
+//   └ summary
+//   colored diff lines
+
+export function editTemplate(
+  path: string,
+  diffLines: string[],
+  expanded: boolean,
+  theme: any,
+): Component {
+  // Count added/removed
   let added = 0;
   let removed = 0;
-  for (const dl of lines) {
+  for (const dl of diffLines) {
     if (dl.startsWith("+") && !dl.startsWith("+++")) added++;
     if (dl.startsWith("-") && !dl.startsWith("---")) removed++;
   }
@@ -491,88 +345,313 @@ export function diffExpandedBox(theme: any, headerName: string, argsLine: string
   if (removed > 0) summary += `removed ${removed} line${removed !== 1 ? "s" : ""}`;
   if (!summary) summary = "no changes";
 
-  // First content line is the summary line
-  raw.push(DIM_GREY + "└ " + summary + "\x1b[39m");
-
-  for (let i = 0; i < show.length; i++) {
-    raw.push(colorizeDiffLine(theme, show[i]));
-  }
-
-  if (hasMore) {
-    const moreText = moreSuffix ? " more " + moreSuffix : " more";
-    moreLine = DIM_GREY + "... " + (lines.length - limit) + moreText + "\x1b[39m";
-  }
-
-  // Store plain text version for copy/paste
-  const plainTextLines = [
-    capitalizedName + "(" + argsLine + ")",
-    "└ " + summary,
-    ...show
-  ];
-  if (hasMore) {
-    const moreTextPt = moreSuffix ? " more " + moreSuffix : " more";
-    plainTextLines.push("... " + (lines.length - limit) + moreTextPt);
-  }
-
-  class GenericComponent {
-    _plainText: string;
-    constructor(private renderFn: (width: number) => string[], plainText: string) {
-      this._plainText = plainText;
+  function colorize(lineTxt: string): string {
+    const numSignMatch = lineTxt.match(/^( *\d+) ([+\-]) (.*)$/);
+    if (numSignMatch) {
+      const num = numSignMatch[1].trim().padStart(3, " ");
+      const sign = numSignMatch[2];
+      const rest = numSignMatch[3];
+      if (sign === '+') return `${DIM_GREY}${num}\x1b[39m \x1b[48;2;20;60;20m\x1b[38;2;160;240;160m+${rest}\x1b[49m\x1b[39m`;
+      return `${DIM_GREY}${num}\x1b[39m \x1b[48;2;60;20;20m\x1b[38;2;240;160;160m-${rest}\x1b[49m\x1b[39m`;
     }
-    render(width: number): string[] {
-      try { return this.renderFn(width); } catch (e: any) { return [`\x1b[31mError rendering: ${e.message}\x1b[39m`]; }
+    const numSignEmptyMatch = lineTxt.match(/^( *\d+) ([+\-])$/);
+    if (numSignEmptyMatch) {
+      const num = numSignEmptyMatch[1].trim().padStart(3, " ");
+      const sign = numSignEmptyMatch[2];
+      if (sign === '+') return `${DIM_GREY}${num}\x1b[39m \x1b[48;2;20;60;20m\x1b[38;2;160;240;160m+\x1b[49m\x1b[39m`;
+      return `${DIM_GREY}${num}\x1b[39m \x1b[48;2;60;20;20m\x1b[38;2;240;160;160m-\x1b[49m\x1b[39m`;
     }
-    invalidate() {}
-    handleInput() {}
+    if (lineTxt.startsWith('+')) return `\x1b[48;2;20;60;20m\x1b[38;2;160;240;160m+${lineTxt.slice(1)}\x1b[49m\x1b[39m`;
+    if (lineTxt.startsWith('-')) return `\x1b[48;2;60;20;20m\x1b[38;2;240;160;160m-${lineTxt.slice(1)}\x1b[49m\x1b[39m`;
+    return lineTxt;
   }
 
-  return new GenericComponent((width: number) => {
-      const result: string[] = [];
-      const headerPrefix = orange(theme, capitalizedName) + "(";
-      const headerPrefixWidth = capitalizedName.length + 1;
-      const argsWidth = Math.max(10, width - headerPrefixWidth - 1);
+  const PREVIEW_LINES = 3;
+  const MAX_EXPANDED = 50;
 
-      const cleanArgsLine = argsLine.replace(/\r/g, "").replace(/^\n+/, "");
-      const wrappedArgs = wrapTextWithAnsi(cleanArgsLine, argsWidth);
-      if (cleanArgsLine.length === 0) {
-        result.push(truncateToWidth(orange(theme, capitalizedName), width));
-      } else if (wrappedArgs.length === 0) {
-        result.push(truncateToWidth(headerPrefix + ")", width));
-      } else {
-        for (let i = 0; i < wrappedArgs.length; i++) {
-          if (i === 0) {
-            const suffix = wrappedArgs.length === 1 ? ")" : "";
-            result.push(truncateToWidth(headerPrefix + wrappedArgs[i] + suffix, width));
-          } else {
-            const prefix = " ".repeat(headerPrefixWidth);
-            const suffix = i === wrappedArgs.length - 1 ? ")" : "";
-            result.push(truncateToWidth(prefix + wrappedArgs[i] + suffix, width));
-          }
-        }
-      }
-      for (const rl of raw) {
-        if (!rl) result.push("");
-        else {
-          let linesToRender: string[];
-          if (visibleWidth(rl) <= width) {
-            linesToRender = [rl];
-          } else {
-            linesToRender = wrapDiffLine(rl, width);
-          }
-          for (const line of linesToRender) {
-            result.push(padBackground(line, width));
-          }
-        }
-      }
-      if (moreLine) {
-        if (visibleWidth(moreLine) <= width) result.push(moreLine);
-        else result.push(...wrapTextWithAnsi(moreLine, width));
-      }
-      return result;
-  }, plainTextLines.join("\n"));
+  if (!expanded) {
+    const collapsedLines: string[] = [];
+    collapsedLines.push(INDENT + orange(theme, "Update") + ` ${path}`);
+    collapsedLines.push(INDENT + DIM_GREY + "\u23bf " + summary + "\x1b[39m");
+
+    const previewLines = diffLines.slice(0, PREVIEW_LINES);
+    for (const dl of previewLines) {
+      collapsedLines.push(INDENT + "  " + colorize(dl));
+    }
+    if (diffLines.length > PREVIEW_LINES) {
+      const remaining = diffLines.length - PREVIEW_LINES;
+      collapsedLines.push(INDENT + "  " + DIM_GREY + "... " + remaining + " more lines (ctrl+o to expand)\x1b[39m");
+    }
+
+    return line(collapsedLines.join("\n"));
+  }
+
+  // Expanded view
+  const show = diffLines.slice(0, MAX_EXPANDED);
+  const raw: string[] = [];
+  raw.push(orange(theme, "Update") + "(" + path + ")");
+  raw.push(DIM_GREY + "\u2514 " + summary + "\x1b[39m");
+
+  for (const dl of show) {
+    raw.push(colorize(dl));
+  }
+
+  if (diffLines.length > MAX_EXPANDED) {
+    raw.push(DIM_GREY + "... " + (diffLines.length - MAX_EXPANDED) + " more lines\x1b[39m");
+  }
+
+  return new TemplateComponent((width: number) => {
+    const result: string[] = [];
+    for (const rl of raw) {
+      if (!rl) result.push("");
+      else if (visibleWidth(rl) <= width) result.push(rl);
+      else result.push(...wrapWithPrefix(rl, width));
+    }
+    return result;
+  }, ["Update(" + path + ")", "\u2514 " + summary, ...diffLines].join("\n"));
 }
 
-// ── Capture Result ─────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+// TEMPLATE 4: Execute Tool
+// ══════════════════════════════════════════════════════════════════════
+//
+// collapsed:
+//   execute {bash} cmd
+//   first 5 output lines
+//   ... N more lines ctrl+o to expand
+//
+// expanded:
+//   execute {bash}(cmd)
+//   full output with duration footer
+
+export function executeTemplate(
+  shellType: string,
+  cmd: string,
+  outputLines: string[],
+  expanded: boolean,
+  result: any,
+  theme: any,
+  options?: { durationS?: number },
+): Component {
+  const PREVIEW_LINES = 5;
+  const MAX_EXPANDED = 40;
+  const isError = result.isError || false;
+  const durationS = options?.durationS ?? -1;
+
+  if (!expanded) {
+    const collapsedLines: string[] = [];
+
+    // Header: execute {bash} cmd
+    const cmdDisplay = cmd.split("\n")[0] || cmd;
+    const maxDisplay = 50;
+    const truncatedCmd = cmdDisplay.length > maxDisplay ? cmdDisplay.slice(0, maxDisplay - 3) + "..." : cmdDisplay;
+    collapsedLines.push(INDENT + orange(theme, "execute") + ` \x1b[38;2;90;180;250m{${shellType}}\x1b[39m ${truncatedCmd}`);
+
+    if (isError) {
+      collapsedLines.push(INDENT + DIM_GREY + "\u23bf failed tool call" + "\x1b[39m");
+      return line(collapsedLines.join("\n"));
+    }
+
+    const previewLines = outputLines.filter(l => l.trim()).slice(0, PREVIEW_LINES);
+    if (previewLines.length > 0) {
+      for (let i = 0; i < previewLines.length; i++) {
+        const prefix = i === 0 ? INDENT + DIM_GREY + "\u23bf  " : INDENT + "   ";
+        const maxLen = 80;
+        const truncated = visibleWidth(previewLines[i]) > maxLen ? previewLines[i].slice(0, maxLen - 3) + "..." : previewLines[i];
+        collapsedLines.push(prefix + "\x1b[97m" + truncated + "\x1b[39m");
+      }
+      const totalLines = outputLines.filter(l => l.trim()).length;
+      const remaining = Math.max(0, totalLines - PREVIEW_LINES);
+      if (remaining > 0) {
+        collapsedLines.push(INDENT + "  " + DIM_GREY + "... " + remaining + " more lines (ctrl+o to expand)\x1b[39m");
+      }
+    } else {
+      collapsedLines.push(INDENT + DIM_GREY + "\u23bf no output\x1b[39m");
+    }
+
+    return line(collapsedLines.join("\n"));
+  }
+
+  // Expanded view
+  const show = outputLines.slice(0, MAX_EXPANDED);
+  const hasMore = outputLines.length > MAX_EXPANDED;
+  const raw: string[] = [];
+
+  raw.push(orange(theme, "execute") + ` \x1b[38;2;90;180;250m{${shellType}}\x1b[39m` + "(" + cmd + ")");
+
+  for (let i = 0; i < show.length; i++) {
+    const prefix = i === 0 ? "\u23bf  " : "   ";
+    raw.push(prefix + (show[i] || ""));
+  }
+
+  if (hasMore) {
+    raw.push(DIM_GREY + "... " + (outputLines.length - MAX_EXPANDED) + " more lines\x1b[39m");
+  }
+
+  // Duration footer
+  if (durationS >= 0) {
+    const durStr = durationS < 60
+      ? durationS.toFixed(1) + "s"
+      : Math.floor(durationS / 60) + "m " + Math.floor(durationS % 60) + "s";
+    raw.push(DIM_GREY + "\u2514 Took " + durStr + "\x1b[39m");
+  }
+
+  return new TemplateComponent((width: number) => {
+    const result: string[] = [];
+    for (const rl of raw) {
+      if (!rl) result.push("");
+      else if (visibleWidth(rl) <= width) result.push(rl);
+      else result.push(...wrapWithPrefix(rl, width));
+    }
+    return result;
+  }, ["execute {" + shellType + "}(" + cmd + ")", ...outputLines].join("\n"));
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// TEMPLATE 5: Read Batch Template
+// ══════════════════════════════════════════════════════════════════════
+//
+// Used for batched read calls in a single tool-use block.
+
+export function readBatchTemplate(
+  files: { path: string; lines: string[] }[],
+  expanded: boolean,
+  theme: any,
+): Component {
+  const fileCount = files.length;
+  const PREVIEW_MAX = 5;
+
+  if (!expanded) {
+    const collapsedLines: string[] = [];
+    collapsedLines.push(INDENT + orange(theme, "Read") + ` ${fileCount} file${fileCount !== 1 ? "s" : ""}`);
+
+    const previewFiles = files.slice(0, PREVIEW_MAX);
+    for (const f of previewFiles) {
+      collapsedLines.push(INDENT + DIM_GREY + "\u23bf \x1b[39m" + f.path);
+    }
+    if (fileCount > PREVIEW_MAX) {
+      const remaining = fileCount - PREVIEW_MAX;
+      collapsedLines.push(INDENT + "  " + DIM_GREY + "... " + remaining + " more files (ctrl+o to expand)\x1b[39m");
+    }
+
+    return line(collapsedLines.join("\n"));
+  }
+
+  // Expanded view
+  const raw: string[] = [];
+  raw.push(orange(theme, "Read") + `(${fileCount} file${fileCount !== 1 ? "s" : ""})`);
+
+  for (const f of files) {
+    raw.push("");
+    raw.push(DIM_GREY + "\u2514 " + f.path + "\x1b[39m");
+    const contentPreview = f.lines.slice(0, 10);
+    for (const l of contentPreview) {
+      raw.push("   " + l);
+    }
+    if (f.lines.length > 10) {
+      raw.push(DIM_GREY + "   ... " + (f.lines.length - 10) + " more lines\x1b[39m");
+    }
+  }
+
+  return new TemplateComponent((width: number) => {
+    const result: string[] = [];
+    for (const rl of raw) {
+      if (!rl) result.push("");
+      else if (visibleWidth(rl) <= width) result.push(rl);
+      else result.push(...wrapWithPrefix(rl, width));
+    }
+    return result;
+  }, ["Read(" + fileCount + " files)", ...files.map(f => f.path)].join("\n"));
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// TEMPLATE 6: Subagent Template
+// ══════════════════════════════════════════════════════════════════════
+//
+// collapsed:
+//   worker 2 working 1 done
+//   ↳ worker using tools...
+//   ↳ reviewer finished
+//
+// expanded:
+//   subagent(...)
+//   per-agent detailed status
+
+export function subagentTemplate(
+  agents: { name: string; status: string; toolCount: number; durationS?: number; error?: string }[],
+  expanded: boolean,
+  theme: any,
+): Component {
+  const working = agents.filter(a => a.status === "running" || a.status === "pending").length;
+  const done = agents.filter(a => a.status === "completed").length;
+  const failed = agents.filter(a => a.status === "failed" || a.status === "error").length;
+
+  if (!expanded) {
+    const collapsedLines: string[] = [];
+    const statusParts: string[] = [];
+    if (working > 0) statusParts.push(`${working} working`);
+    if (done > 0) statusParts.push(`${done} done`);
+    if (failed > 0) statusParts.push(`${failed} failed`);
+
+    const agentNames = agents.map(a => a.name).join(", ");
+    collapsedLines.push(INDENT + orange(theme, "Subagent") + ` ${agentNames.length > 40 ? agentNames.slice(0, 40) + "..." : agentNames}`);
+    if (statusParts.length > 0) {
+      collapsedLines.push(INDENT + DIM_GREY + "\u23bf " + statusParts.join(", ") + "\x1b[39m");
+    }
+
+    for (const a of agents) {
+      const statusIcon = a.status === "completed" ? "\u2713" : a.status === "failed" || a.status === "error" ? "\u2717" : "\u25B6";
+      const statusColor = a.status === "completed" ? "\x1b[38;2;120;220;120m" : a.status === "failed" || a.status === "error" ? "\x1b[38;2;240;160;160m" : "\x1b[38;2;250;179;135m";
+      collapsedLines.push(INDENT + "  " + statusColor + statusIcon + "\x1b[39m " + a.name + (a.error ? `: ${a.error.slice(0, 60)}` : ""));
+    }
+
+    return line(collapsedLines.join("\n"));
+  }
+
+  // Expanded view
+  const raw: string[] = [];
+  raw.push(orange(theme, "Subagent") + `(${agents.length} agent${agents.length !== 1 ? "s" : ""})`);
+
+  for (const a of agents) {
+    const statusColor = a.status === "completed" ? "\x1b[38;2;120;220;120m" : a.status === "failed" ? "\x1b[38;2;240;160;160m" : "\x1b[38;2;250;179;135m";
+    const durStr = (a.durationS !== undefined && a.durationS > 0) ? ` \u00b7 ${formatDur(a.durationS)}` : "";
+    raw.push(DIM_GREY + "\u2514 " + statusColor + a.name + "\x1b[39m" + ` [${a.status}]` + ` \u00b7 ${a.toolCount} tools` + durStr);
+    if (a.error) {
+      raw.push("   " + "\x1b[38;2;240;160;160m" + a.error + "\x1b[39m");
+    }
+  }
+
+  return new TemplateComponent((width: number) => {
+    const result: string[] = [];
+    for (const rl of raw) {
+      if (!rl) result.push("");
+      else if (visibleWidth(rl) <= width) result.push(rl);
+      else result.push(...wrapWithPrefix(rl, width));
+    }
+    return result;
+  }, ["Subagent(" + agents.length + ")", ...agents.map(a => a.name + " [" + a.status + "]")].join("\n"));
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// DEPRECATED — kept for compatibility with legacy code
+// ══════════════════════════════════════════════════════════════════════
+
+export function line(text: string): Component {
+  return {
+    render(width: number) {
+      return [truncateToWidth(text, width, "...")];
+    },
+    invalidate() {},
+  };
+}
+
+export function noOp(): Component {
+  return { render() { return []; }, invalidate() {} };
+}
+
+export function compactFailed(theme: any): Component {
+  return line(INDENT + DIM_GREY + "\u23bf failed tool call" + "\x1b[39m");
+}
 
 export function captureResult(result: any, durationMs?: number): any {
   const fullText = result.content?.[0]?.text || "";
