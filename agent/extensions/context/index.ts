@@ -546,7 +546,7 @@ export default function (pi: ExtensionAPI) {
 	// Install the Copilot usage bridge on session start. Other extensions
 	// (statusline, etc.) read from `globalThis.__pi_copilot_usage`.
 	pi.on("session_start", async (_event, _ctx) => {
-		installCopilotUsageBridge();
+		installCopilotUsageBridge(_ctx.modelRegistry.authStorage);
 	});
 
 	pi.on("session_shutdown", () => {
