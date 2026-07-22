@@ -1,6 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { Text } from "@earendil-works/pi-tui";
 import { execFile } from "node:child_process";
 import { existsSync, statSync, readdirSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
@@ -1160,7 +1159,6 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "video_extract",
 		label: "Video Extract",
-		renderShell: "self",
 		description:
 			"Extract content from YouTube videos and local video files. Supports full video analysis via Gemini API, frame extraction at specific timestamps or ranges, and sampling frames across the entire video. When using Gemini analysis, pass a specific question via prompt for best results. This directs the AI to focus on that aspect of the video, producing much better results than a generic extraction.",
 		promptSnippet:
@@ -1271,85 +1269,6 @@ export default function (pi: ExtensionAPI) {
 					duration: result.duration,
 				},
 			};
-		},
-
-		renderCall(args, theme, context) {
-			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			const { url, prompt, timestamp, frames, model } = args as {
-				url?: string;
-				prompt?: string;
-				timestamp?: string;
-				frames?: number;
-				model?: string;
-			};
-			if (!url) {
-				text.setText(theme.fg("toolTitle", theme.bold("video ")) + theme.fg("error", "(no URL)"));
-				return text;
-			}
-			const lines: string[] = [];
-			const display = url.length > 60 ? url.slice(0, 57) + "..." : url;
-			lines.push(theme.fg("toolTitle", theme.bold("video ")) + theme.fg("accent", display));
-			if (timestamp) lines.push(theme.fg("dim", "  timestamp: ") + theme.fg("warning", timestamp));
-			if (typeof frames === "number") lines.push(theme.fg("dim", "  frames: ") + theme.fg("warning", String(frames)));
-			if (prompt) {
-				const d = prompt.length > 250 ? prompt.slice(0, 247) + "..." : prompt;
-				lines.push(theme.fg("dim", "  prompt: ") + theme.fg("muted", `"${d}"`));
-			}
-			if (model) lines.push(theme.fg("dim", "  model: ") + theme.fg("warning", model));
-			text.setText(lines.join("\n"));
-			return text;
-		},
-
-		renderResult(result, { expanded, isPartial }, theme, context) {
-			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-
-			if (isPartial) {
-				text.setText(theme.fg("warning", "Extracting…"));
-				return text;
-			}
-
-			if (context.isError) {
-				const msg = result.content.find((c) => c.type === "text")?.text || "Error";
-				text.setText(theme.fg("error", msg));
-				return text;
-			}
-
-			const details = result.details as {
-				title?: string;
-				totalChars?: number;
-				imageCount?: number;
-				duration?: number;
-				prompt?: string;
-				timestamp?: string;
-				frames?: number;
-			};
-
-			const title = details?.title || "Video";
-			const imgCount = details?.imageCount ?? 0;
-			const imageBadge = imgCount > 1 ? theme.fg("accent", ` [${imgCount} images]`)
-				: imgCount === 1 ? theme.fg("accent", " [image]") : "";
-			let statusLine = theme.fg("success", title) + theme.fg("muted", ` (${details?.totalChars ?? 0} chars)`) + imageBadge;
-			if (typeof details?.duration === "number") {
-				statusLine += theme.fg("muted", ` | ${formatSeconds(Math.floor(details.duration))} total`);
-			}
-
-			if (!expanded) {
-				text.setText(statusLine);
-				return text;
-			}
-
-			const lines = [statusLine];
-			if (details?.prompt) {
-				const d = details.prompt.length > 250 ? details.prompt.slice(0, 247) + "..." : details.prompt;
-				lines.push(theme.fg("dim", `  prompt: "${d}"`));
-			}
-			if (details?.timestamp) lines.push(theme.fg("dim", `  timestamp: ${details.timestamp}`));
-			if (typeof details?.frames === "number") lines.push(theme.fg("dim", `  frames: ${details.frames}`));
-			const content = result.content.find((c) => c.type === "text")?.text || "";
-			const preview = content.length > 500 ? content.slice(0, 500) + "..." : content;
-			lines.push(theme.fg("dim", preview));
-			text.setText(lines.join("\n"));
-			return text;
 		},
 	});
 }
