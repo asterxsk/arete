@@ -9,7 +9,6 @@
 // extensions are loaded via jiti which gives each file a separate module
 // instance.
 
-import { AuthStorage } from "@earendil-works/pi-coding-agent";
 
 // ── Public types ──────────────────────────────────────────────────────
 
@@ -257,8 +256,8 @@ export async function fetchCopilotUsageFromLogin(authStorage: CopilotAuthStorage
  * `CopilotUsageStatus` value: `"loading"`, `"not-logged-in"`, or the
  * latest `CopilotUsageSummary`.
  */
-export function installCopilotUsageBridge(authStorage?: CopilotAuthStorageLike): CopilotUsageBridge {
-	const storage = authStorage ?? AuthStorage.create();
+export function installCopilotUsageBridge(authStorage: CopilotAuthStorageLike): CopilotUsageBridge {
+	const storage = authStorage;
 	let status: CopilotUsageStatus = "loading";
 
 	async function refresh(): Promise<void> {

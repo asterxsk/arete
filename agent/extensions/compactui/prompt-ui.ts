@@ -24,7 +24,9 @@ export function initPromptUi(): void {
   }
 
   userMsgProto.render = function (width: number) {
-    const targetWidth = Math.max(1, width - 3);
+    const isAutocomplete = typeof this.text === "string" && (this.text.startsWith("→ ") || this.text.startsWith("  "));
+
+    const targetWidth = isAutocomplete ? width : Math.max(1, width - 3);
     const box = getBoxChild(this);
     if (box) {
       box.bgFn = null;
@@ -37,11 +39,15 @@ export function initPromptUi(): void {
     const resetBg = "\x1b[49m";
     const prefix = " \u276f ";
     const prefixW = visibleWidth(prefix);
-    const lines = originalRender.call(this, Math.max(1, targetWidth - prefixW));
+    const lines = originalRender.call(this, isAutocomplete ? width : Math.max(1, targetWidth - prefixW));
     if (!Array.isArray(lines) || lines.length === 0) return lines;
 
+    if (isAutocomplete) {
+      return lines;
+    }
+
     // Remove all empty padding lines
-    const contentLines = lines.filter(l => l !== "");
+    const contentLines = lines.filter((l: string) => l !== "");
     if (contentLines.length === 0) {
       const pad = " ".repeat(Math.max(0, targetWidth));
       return [truncateToWidth(bg + prefix + pad + resetBg, width)];
@@ -49,7 +55,7 @@ export function initPromptUi(): void {
 
     // Render all content lines with bg; first gets prefix, rest get indent
     const indent = " ".repeat(prefixW);
-    return contentLines.map((lineText, i) => {
+    return contentLines.map((lineText: string, i: number) => {
       const pfx = i === 0 ? prefix : indent;
       const visLen = prefixW + visibleWidth(lineText);
       const padding = " ".repeat(Math.max(0, targetWidth - visLen));

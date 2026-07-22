@@ -22,7 +22,7 @@ Visualizes current context window usage as a colored grid overlay, showing token
 
 ### copilot-usage.ts
 - Support module for GitHub Copilot quota fetching
-- Uses `AuthStorage` to read GitHub Copilot credentials
+- Uses injected `authStorage` from `modelRegistry` to read GitHub Copilot credentials
 - Exchanges OAuth token for session token via `copilot_internal/v2/token`
 - Exposes `CopilotUsageBridge` via `globalThis.__pi_copilot_usage`
 
