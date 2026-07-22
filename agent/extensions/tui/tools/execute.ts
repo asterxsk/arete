@@ -14,26 +14,21 @@
 //             extensions/powershell/index.ts),
 //   - bash  → delegates to the host `createBashTool` factory.
 //
-// Rendering uses the unified format (glow label + `↳` summary + separator),
-// shared with the other per-tool modules.
+// Rendering is delegated to resolveTemplate in rendering.ts, which routes
+// bash/pwsh/powershell tool names to executeTemplate.
 //
 // The tool is registered under three aliases — `bash`, `pwsh`, `powershell` —
-// so any of those names route to this single implementation. The legacy
-// separate `bash`/`powershell` renderers are superseded.
+// so any of those names route to this single implementation.
 //
 // Shell selection is isolated into the pure, exported helpers `defaultShellFor`
 // and `selectShell` so it can be unit-tested deterministically with an injected
 // platform (no real `process.platform` dependency in tests).
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { Component } from "@earendil-works/pi-tui";
 import { spawn } from "child_process";
 import { createBashTool } from "@earendil-works/pi-coding-agent";
 
-import { COLLAPSED_BUDGET, truncate, unifiedBlock } from "./rendering.js";
-
-/** The single implementation name shown in the glow label for all aliases. */
-export const NAME = "Execute";
+import { patchTool } from "./rendering.js";
 
 /** Aliases that all route to this single tool. */
 export const ALIASES = ["bash", "pwsh", "powershell"] as const;
@@ -58,69 +53,6 @@ export function defaultShellFor(platform: NodeJS.Platform): ShellName {
 /** Resolve the shell: explicit param overrides the platform default. */
 export function selectShell(shell: ShellName | undefined, platform: NodeJS.Platform): ShellName {
   return shell ?? defaultShellFor(platform);
-}
-
-// ── Rendering (unified format) ───────────────────────────────────────
-
-/** Shorten a command to its first line (truncated) for display. */
-export function shortCommand(cmd: string | undefined): string | undefined {
-  if (!cmd) return undefined;
-  const first = cmd.split("\n")[0] ?? cmd;
-  if (first.length <= 40) return first;
-  return first.slice(0, 37) + "...";
-}
-
-export function renderCall(args: any, theme: any, _ctx: any): Component {
-  return unifiedBlock(theme, {
-    name: NAME,
-    argSummary: shortCommand(args?.command),
-    summary: "execute",
-  });
-}
-
-export function renderResult(
-  result: any,
-  opts: { expanded: boolean },
-  theme: any,
-  ctx: any,
-): Component {
-  const details = result?.details as Record<string, unknown> | undefined;
-  const full = (details?._fullOutput as string) ?? result?.content?.[0]?.text ?? "";
-  const rawLines = full.split("\n");
-  const lineCount = rawLines.length;
-  const exitCode = details?.exitCode as number | undefined;
-  const shell = details?.shell as ShellName | undefined;
-  const overBudget = lineCount > COLLAPSED_BUDGET;
-
-  const shellTag = shell ? ` (${shell})` : "";
-
-  if (!opts.expanded) {
-    if (result?.isError) {
-      return unifiedBlock(theme, {
-        name: NAME,
-        argSummary: shortCommand(ctx?.args?.command),
-        summary: "failed",
-        hint: (exitCode !== undefined ? ` (exit ${exitCode})` : "") + shellTag,
-      });
-    }
-    const hint = (overBudget ? " … (ctrl+o to expand)" : "") + shellTag;
-    const exitHint = exitCode !== undefined && exitCode !== 0 ? ` (exit ${exitCode})${hint}` : hint;
-    return unifiedBlock(theme, {
-      name: NAME,
-      argSummary: shortCommand(ctx?.args?.command),
-      summary: "ran",
-      count: lineCount,
-      hint: exitHint || " ",
-    });
-  }
-
-  return unifiedBlock(theme, {
-    name: NAME,
-    argSummary: shortCommand(ctx?.args?.command),
-    summary: (exitCode !== undefined ? `ran (exit ${exitCode})` : "ran") + shellTag,
-    count: lineCount,
-    body: (width: number) => truncate(rawLines, COLLAPSED_BUDGET + 12).render(width),
-  });
 }
 
 // ── Execution ────────────────────────────────────────────────────────
@@ -267,17 +199,16 @@ export function registerExecuteTool(pi: ExtensionAPI): void {
   const cwd = process.cwd();
 
   for (const alias of ALIASES) {
-    pi.registerTool({
+    const definition = {
       name: alias,
       label: alias,
       description: EXECUTE_DESCRIPTION,
       parameters: EXECUTE_PARAMETERS as any,
-      renderShell: "self",
       async execute(toolCallId, params, signal, onUpdate) {
         return makeExecute(cwd)(toolCallId, params as ExecuteParams, signal, onUpdate);
       },
-      renderCall,
-      renderResult,
-    });
+    };
+    patchTool(definition);
+    pi.registerTool(definition);
   }
 }

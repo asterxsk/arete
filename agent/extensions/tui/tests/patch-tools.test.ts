@@ -72,10 +72,10 @@ describe("patch-tools: unknown/generic tool monkey-patch", () => {
     const callText = callLines.join("\n");
     const resultText = resultLines.join("\n");
 
-    // Glow tool title present (tool name rendered).
-    expect(callText).toContain("mystery_tool");
-    // Muted ↳ summary line present.
-    expect(callText).toContain("↳");
+    // Glow tool title present (tool name rendered, underscores replaced with spaces).
+    expect(callText).toContain("Mystery tool");
+    // ↳ summary line present in the result (not call).
+    expect(resultText).toContain("↳");
     // Full-width border separator (─ repeated) present.
     expect(resultText).toContain("─");
   });
@@ -143,7 +143,7 @@ describe("patch-tools: unknown/generic tool monkey-patch", () => {
       render: (ToolExecutionComponent.prototype as any).render,
     };
     const out = fake.render(width).join("\n");
-    expect(out).toContain("generic_tool");
+    expect(out).toContain("Generic tool");
     expect(out).toContain("↳");
     expect(out).toContain("─");
   });

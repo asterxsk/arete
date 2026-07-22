@@ -1,13 +1,16 @@
 # extensions
 
 ## Purpose
+
 Each subfolder is a self-contained pi extension. Pi auto-loads any `extensions/<name>/index.ts` (or `extensions/<name>/package.json` with a `pi.extensions` field).
 
 ## Ownership
+
 - Modular extension system for Pi.
 - Registration, integration, and architecture patterns across all extensions.
 
 ## Local Contracts
+
 - **Independence**: Each extension folder is self-contained — no extension imports from a sibling.
 - **Bridges**: Cross-extension integration uses `globalThis` bridges (e.g., `globalThis.__pi_copilot_usage`, `globalThis.__pi_goal_state`). Bridge keys are prefixed with `__pi_` and unique per extension.
 - **NPM dep safety**: Every extension with npm dependencies must guard all top-level requires/imports in a try/catch. Missing deps log a warning, register with `status: "degraded"` or `status: "disabled"`, and return early rather than crashing Pi.
@@ -16,7 +19,8 @@ Each subfolder is a self-contained pi extension. Pi auto-loads any `extensions/<
 - **UI Primitives**: Extensions use `ctx.ui` methods (`setHeader`, `setFooter`, `setWidget`, `notify`, `custom`, `select`, `input`) independently.
 
 ## Work Guidance
-- **Adding an extension**: 
+
+- **Adding an extension**:
   1. Create a new folder `extensions/<name>/`
   2. Add an `index.ts` with a default export that receives `pi: ExtensionAPI`
   3. Add an `AGENTS.md` explaining purpose, API surface, and how to remove
@@ -38,14 +42,15 @@ Each subfolder is a self-contained pi extension. Pi auto-loads any `extensions/<
 - **Removing an extension**: Delete the folder. Tools/commands/shortcuts will disappear automatically, and peers will degrade gracefully.
 
 ## Verification
+
 - Extensions should load automatically via `index.ts` or `package.json`.
 - Missing peer extensions should not crash the host extension (verify graceful degradation).
 - New extensions should appear in the system prompt under `## Loaded Extensions` if properly registered.
 
 ## Child DOX Index
+
 - `agentzero/` — `/init` command (create or audit AGENTS.md) and global AGENTS.md injection into system prompt
 - `artifacts/` — `create_artifact`, `scaffold_artifact`, `render_artifact`, `list_artifacts`, `delete_artifact`, and `check_artifact` tools + `/artifacts` command: save/browse standalone html/md artifacts, opening html in the default browser (with WSL support) and md in a fullscreen reader (with line numbers, arrow cursor selection, inline commenting, and review submission)
-- `compactui/` — Compact tool rendering, responsive wrapping, assistant time tracking footer, tagged thinking dimming, tool status dot, and auto-hide notifications (3s).
 - `context/` — `/context` overlay: token grid breakdown with per-category color-coded visualization
 - `ferment/` — Structured delivery framework (scope, phases, steps) for long-running agent tasks
 - `9router-provider/` — Local/remote 9router AI gateway provider with auto-discovered models and `/login` integration
@@ -65,4 +70,3 @@ Each subfolder is a self-contained pi extension. Pi auto-loads any `extensions/<
 - `timers/` — `/schedule` command — one-shot and repeating timers with notifications, auto-delete on fire, and overlay browser
 - `todo/` — `todo` tool + `/todos` command — structured task list with status tracking, categories, reminders, and persistent overlay widget
 - `video-extract/` — `video_extract` tool: YouTube + local video content extraction via Gemini API, ffmpeg, and yt-dlp
-

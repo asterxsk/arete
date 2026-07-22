@@ -1,12 +1,14 @@
 // tui/tools/register.ts — registerToolRenderers(pi)
 //
-// Re-registers each built-in tool with the unified per-tool renderers defined in
-// tools/{read,write,edit,bash,ls,grep,find,powershell}.ts while preserving the
-// original execution behavior by delegating `execute` to the host `create*Tool`
-// factories (and, for powershell, to a spawn mirror of extensions/powershell).
+// Re-registers each built-in tool with the unified template-based renderers
+// defined in rendering.ts (via resolveTemplate) while preserving the original
+// execution behavior by delegating `execute` to the host `create*Tool` factories.
 //
 // Each `execute` is wrapped so that the captured plain-text output is placed on
-// `details._fullOutput`; the per-tool renderers read that field.
+// `details._fullOutput`; the template renderers read that field.
+//
+// All tools without dedicated execution (web_search, web_fetch, memory, etc.)
+// are handled by patchUnknownToolRenderers in patch-tools.ts.
 //
 // Called from index.ts after registerBar.
 
@@ -20,12 +22,7 @@ import {
   createFindTool,
 } from "@earendil-works/pi-coding-agent";
 
-import * as readMod from "./read.js";
-import * as writeMod from "./write.js";
-import * as editMod from "./edit.js";
-import * as lsMod from "./ls.js";
-import * as grepMod from "./grep.js";
-import * as findMod from "./find.js";
+import { patchTool } from "./rendering.js";
 import { registerExecuteTool } from "./execute.js";
 import { patchUnknownToolRenderers } from "./patch-tools.js";
 
@@ -58,97 +55,33 @@ function wrapExecute(original: any) {
 export function registerToolRenderers(pi: ExtensionAPI): void {
   const cwd = process.cwd();
 
-  const read = createReadTool(cwd);
-  pi.registerTool({
-    name: "read",
-    label: "read",
-    description: read.description,
-    parameters: read.parameters,
-    renderShell: "self",
-    async execute(toolCallId, params, signal, onUpdate) {
-      return wrapExecute(read)(toolCallId, params, signal, onUpdate);
-    },
-    renderCall: readMod.renderCall,
-    renderResult: readMod.renderResult,
-  });
+  const tools = [
+    { tool: createReadTool(cwd), params: { name: "read", label: "read" } },
+    { tool: createWriteTool(cwd), params: { name: "write", label: "write" } },
+    { tool: createEditTool(cwd), params: { name: "edit", label: "edit" } },
+    { tool: createLsTool(cwd), params: { name: "ls", label: "ls" } },
+    { tool: createGrepTool(cwd), params: { name: "grep", label: "grep" } },
+    { tool: createFindTool(cwd), params: { name: "find", label: "find" } },
+  ];
 
-  const write = createWriteTool(cwd);
-  pi.registerTool({
-    name: "write",
-    label: "write",
-    description: write.description,
-    parameters: write.parameters,
-    renderShell: "self",
-    async execute(toolCallId, params, signal, onUpdate) {
-      return wrapExecute(write)(toolCallId, params, signal, onUpdate);
-    },
-    renderCall: writeMod.renderCall,
-    renderResult: writeMod.renderResult,
-  });
+  for (const { tool, params } of tools) {
+    const definition = {
+      name: params.name,
+      label: params.label,
+      description: tool.description,
+      parameters: tool.parameters,
+      async execute(toolCallId: string, p: any, signal: any, onUpdate: any) {
+        return wrapExecute(tool)(toolCallId, p, signal, onUpdate);
+      },
+    };
+    patchTool(definition);
+    pi.registerTool(definition);
+  }
 
-  const edit = createEditTool(cwd);
-  pi.registerTool({
-    name: "edit",
-    label: "edit",
-    description: edit.description,
-    parameters: edit.parameters,
-    renderShell: "self",
-    async execute(toolCallId, params, signal, onUpdate) {
-      return wrapExecute(edit)(toolCallId, params, signal, onUpdate);
-    },
-    renderCall: editMod.renderCall,
-    renderResult: editMod.renderResult,
-  });
-
-  const ls = createLsTool(cwd);
-  pi.registerTool({
-    name: "ls",
-    label: "ls",
-    description: ls.description,
-    parameters: ls.parameters,
-    renderShell: "self",
-    async execute(toolCallId, params, signal, onUpdate) {
-      return wrapExecute(ls)(toolCallId, params, signal, onUpdate);
-    },
-    renderCall: lsMod.renderCall,
-    renderResult: lsMod.renderResult,
-  });
-
-  const grep = createGrepTool(cwd);
-  pi.registerTool({
-    name: "grep",
-    label: "grep",
-    description: grep.description,
-    parameters: grep.parameters,
-    renderShell: "self",
-    async execute(toolCallId, params, signal, onUpdate) {
-      return wrapExecute(grep)(toolCallId, params, signal, onUpdate);
-    },
-    renderCall: grepMod.renderCall,
-    renderResult: grepMod.renderResult,
-  });
-
-  const find = createFindTool(cwd);
-  pi.registerTool({
-    name: "find",
-    label: "find",
-    description: find.description,
-    parameters: find.parameters,
-    renderShell: "self",
-    async execute(toolCallId, params, signal, onUpdate) {
-      return wrapExecute(find)(toolCallId, params, signal, onUpdate);
-    },
-    renderCall: findMod.renderCall,
-    renderResult: findMod.renderResult,
-  });
-
-  // bash + pwsh + powershell now route to the single combined Execute tool,
-  // which supersedes the legacy separate bash/powershell renderers.
+  // bash + pwsh + powershell now route to the single combined Execute tool
   registerExecuteTool(pi);
 
-  // Monkey-patch ToolExecutionComponent.render (and instance/prototype
-  // registerTool + addMessageToChat spacing) so any tool without a dedicated
-  // render module still renders in the unified format. Runs after per-tool
-  // registration so late-registered tools are also caught.
+  // Monkey-patch ToolExecutionComponent + registerTool + spacing so any tool
+  // without a dedicated render module still renders in the unified format.
   patchUnknownToolRenderers(pi);
 }

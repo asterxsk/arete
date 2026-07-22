@@ -19,9 +19,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { ThinkingComponent } from "../thinking.js";
-import * as readMod from "../tools/read.js";
-import * as bashMod from "../tools/bash.js";
-import * as editMod from "../tools/edit.js";
+import { resolveTemplate } from "../tools/rendering.js";
 import { renderMemorySearchCall, renderMemorySearchResult } from "../memory.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -66,9 +64,11 @@ function thinkingLines(theme: any, text: string, width: number): string[] {
   return new ThinkingComponent(text, theme, 1).render(width).map(stripAnsi);
 }
 
-function unifiedToolLines(mod: any, result: any, ctxArgs: any, width = 80): string[] {
+function unifiedToolLines(name: string, result: any, ctxArgs: any, width = 80): string[] {
   const theme = makeToolTheme();
-  return mod
+  const template = resolveTemplate({ name });
+  if (!template || !template.renderResult) return [];
+  return template
     .renderResult(result, { expanded: false }, theme as any, { args: ctxArgs })
     .render(width)
     .map(stripAnsi);
@@ -109,7 +109,7 @@ describe("VAL-CROSS-001: thinking block (┃ prefix) coexists with unified tool 
   it("thinking lines carry the `┃ ` pipe prefix, tool blocks carry glow/↳/separator — no collision", () => {
     const think = thinkingLines(theme, "Let me check the file first.", WIDTH);
     const tool = unifiedToolLines(
-      readMod,
+      "read",
       {
         content: [{ type: "text", text: "a\nb\nc" }],
         details: { _fullOutput: "a\nb\nc" },
@@ -125,7 +125,7 @@ describe("VAL-CROSS-001: thinking block (┃ prefix) coexists with unified tool 
 
     // unified tool block signature
     expect(tool).toHaveLength(3);
-    expect(tool[0]).toContain("read"); // glow title
+    expect(tool[0]).toContain("Read"); // glow title
     expect(tool[1]).toContain("↳"); // arrow line
     expect(tool[2].replace(/ /g, "")).toContain("─"); // separator (full width)
 
@@ -136,7 +136,7 @@ describe("VAL-CROSS-001: thinking block (┃ prefix) coexists with unified tool 
     // each area kept its signature; concatenation preserves both
     expect(frame[0].startsWith(" ┃ ")).toBe(true);
     expect(joined).toContain("┃ ");
-    expect(joined).toContain("read");
+    expect(joined).toContain("Read");
     expect(joined).toContain("↳");
 
     // No line was clobbered: line count is the exact sum (no overlap)
@@ -150,13 +150,13 @@ describe("VAL-CROSS-001: thinking block (┃ prefix) coexists with unified tool 
     const t1 = thinkingLines(theme, "step one", WIDTH);
     const t2 = thinkingLines(theme, "step two", WIDTH);
     const tool1 = unifiedToolLines(
-      bashMod,
+      "bash",
       { content: [{ type: "text", text: "out" }], details: { _fullOutput: "out" }, isError: false },
       { command: "echo hi" },
       WIDTH,
     );
     const tool2 = unifiedToolLines(
-      editMod,
+      "edit",
       { details: { diff: "+a\n-b" } },
       { path: "/tmp/y.ts" },
       WIDTH,
@@ -166,8 +166,8 @@ describe("VAL-CROSS-001: thinking block (┃ prefix) coexists with unified tool 
     const thinkCount = frame.filter((l) => l.startsWith(" ┃ ")).length;
     expect(thinkCount).toBe(t1.length + t2.length);
     // both tool blocks kept their glow titles
-    expect(frame.some((l) => l.includes("bash"))).toBe(true);
-    expect(frame.some((l) => l.includes("edit"))).toBe(true);
+    expect(frame.some((l) => l.includes("Execute"))).toBe(true);
+    expect(frame.some((l) => l.includes("Update"))).toBe(true);
   });
 });
 
@@ -209,7 +209,7 @@ describe("VAL-CROSS-002: boxed editor (╭─╮) coexists with unified tool blo
 
     // An independent unified tool block rendered in the same frame.
     const tool = unifiedToolLines(
-      readMod,
+      "read",
       {
         content: [{ type: "text", text: "x\ny" }],
         details: { _fullOutput: "x\ny" },
@@ -226,7 +226,7 @@ describe("VAL-CROSS-002: boxed editor (╭─╮) coexists with unified tool blo
     expect(joined).toContain("╮");
     expect(joined).toContain("╰");
     expect(joined).toContain("╯");
-    expect(joined).toContain("read");
+    expect(joined).toContain("Read");
     expect(joined).toContain("↳");
 
     // tool separator still full width (not collapsed into the editor box)
@@ -271,7 +271,7 @@ describe("VAL-CROSS-003: blinker sweep + unified tool block render simultaneousl
     const { editor } = await driveBlinkerActive();
     const barLines = editor.render(WIDTH).map(stripAnsi);
     const tool = unifiedToolLines(
-      bashMod,
+      "bash",
       {
         content: [{ type: "text", text: "hello" }],
         details: { _fullOutput: "hello" },
@@ -295,7 +295,7 @@ describe("VAL-CROSS-003: blinker sweep + unified tool block render simultaneousl
     const frame = [...barLines, ...tool];
     const joined = frame.join("\n");
     expect(joined).toContain("╭"); // boxed editor present
-    expect(joined).toContain("bash"); // tool block present
+    expect(joined).toContain("Execute"); // tool block present (bash → Execute label)
     expect(joined).toContain("↳"); // tool arrow line present
     // tool separator still full width
     expect(visibleWidth(tool[2])).toBe(WIDTH);
@@ -306,7 +306,7 @@ describe("VAL-CROSS-003: blinker sweep + unified tool block render simultaneousl
     // agent_settled while still animating — the core cross-area survival proof.
     const { editor, ui, handlers, ctx } = await driveBlinkerActive();
     const tool = unifiedToolLines(
-      bashMod,
+      "bash",
       {
         content: [{ type: "text", text: "hello" }],
         details: { _fullOutput: "hello" },
@@ -318,7 +318,7 @@ describe("VAL-CROSS-003: blinker sweep + unified tool block render simultaneousl
 
     // Before retry: sweep visible (red channel) and tool block present.
     expect(editor.render(WIDTH)[0]).toContain("\x1b[38;2;255;");
-    expect(tool[0]).toContain("bash");
+    expect(tool[0]).toContain("Execute"); // bash tools use Execute label
     expect(tool[1]).toContain("↳");
 
     // Fire the retry boundary events.
@@ -337,7 +337,7 @@ describe("VAL-CROSS-003: blinker sweep + unified tool block render simultaneousl
     expect(setIntervalSpy).toHaveBeenCalledTimes(1);
 
     // Tool block remains identical after the retry boundary.
-    expect(tool[0]).toContain("bash");
+    expect(tool[0]).toContain("Execute"); // bash tools use Execute label
     expect(tool[1]).toContain("↳");
     expect(visibleWidth(tool[2])).toBe(WIDTH);
   });
@@ -349,16 +349,22 @@ describe("VAL-CROSS-004: tool rendering identical with memory on vs off", () => 
   const WIDTH = 80;
   const theme = makeToolTheme();
 
-  function renderWithMemoryFlag(mod: any, result: any, ctxArgs: any, memoryOn: boolean): string[] {
+  function renderWithMemoryFlag(
+    name: string,
+    result: any,
+    ctxArgs: any,
+    memoryOn: boolean,
+  ): string[] {
+    const theme = makeToolTheme();
+    const template = resolveTemplate({ name });
+    if (!template || !template.renderResult) return [];
     const ctx: any = {
       args: ctxArgs,
-      // Simulate the host passing memory-enabled / disabled flags. The unified
-      // tool renderers take no memory parameter, so this proves independence.
       memoryEnabled: memoryOn,
       __memoryInjected: memoryOn,
       systemPromptFlags: { memory: memoryOn },
     };
-    return mod.renderResult(result, { expanded: false }, theme as any, ctx).render(WIDTH);
+    return template.renderResult(result, { expanded: false }, theme as any, ctx).render(WIDTH);
   }
 
   it("read block renders identically regardless of memory flag", () => {
@@ -367,8 +373,8 @@ describe("VAL-CROSS-004: tool rendering identical with memory on vs off", () => 
       details: { _fullOutput: "a\nb\nc" },
       isError: false,
     };
-    const off = renderWithMemoryFlag(readMod, result, { path: "/tmp/x.ts" }, false);
-    const on = renderWithMemoryFlag(readMod, result, { path: "/tmp/x.ts" }, true);
+    const off = renderWithMemoryFlag("read", result, { path: "/tmp/x.ts" }, false);
+    const on = renderWithMemoryFlag("read", result, { path: "/tmp/x.ts" }, true);
     expect(on).toEqual(off);
   });
 
@@ -378,15 +384,15 @@ describe("VAL-CROSS-004: tool rendering identical with memory on vs off", () => 
       details: { _fullOutput: "hi", exitCode: 0 },
       isError: false,
     };
-    const off = renderWithMemoryFlag(bashMod, result, { command: "echo hi" }, false);
-    const on = renderWithMemoryFlag(bashMod, result, { command: "echo hi" }, true);
+    const off = renderWithMemoryFlag("bash", result, { command: "echo hi" }, false);
+    const on = renderWithMemoryFlag("bash", result, { command: "echo hi" }, true);
     expect(on).toEqual(off);
   });
 
   it("edit diff block renders identically regardless of memory flag", () => {
     const result = { details: { diff: "+lineA\n-lineB\n context" } };
-    const off = renderWithMemoryFlag(editMod, result, { path: "/tmp/y.ts" }, false);
-    const on = renderWithMemoryFlag(editMod, result, { path: "/tmp/y.ts" }, true);
+    const off = renderWithMemoryFlag("edit", result, { path: "/tmp/y.ts" }, false);
+    const on = renderWithMemoryFlag("edit", result, { path: "/tmp/y.ts" }, true);
     expect(on).toEqual(off);
   });
 
@@ -401,7 +407,7 @@ describe("VAL-CROSS-004: tool rendering identical with memory on vs off", () => 
       isError: false,
     };
     const off = unifiedToolLines(
-      bashMod,
+      "bash",
       {
         content: [{ type: "text", text: memoryInjected }],
         details: { _fullOutput: memoryInjected },
@@ -410,11 +416,11 @@ describe("VAL-CROSS-004: tool rendering identical with memory on vs off", () => 
       { command: "echo hi" },
       WIDTH,
     );
-    const on = unifiedToolLines(bashMod, result, { command: "echo hi" }, WIDTH);
+    const on = unifiedToolLines("bash", result, { command: "echo hi" }, WIDTH);
     expect(on).toEqual(off);
     // structural format preserved: glow + ↳ + full-width separator
     expect(on).toHaveLength(3);
-    expect(on[0]).toContain("bash");
+    expect(on[0]).toContain("Execute"); // bash tools use Execute label via templates
     expect(on[1]).toContain("↳");
     expect(visibleWidth(on[2])).toBe(WIDTH);
   });
@@ -503,7 +509,7 @@ describe("VAL-CROSS-005: full end-to-end turn runs with no regression, clean age
       .render(WIDTH)
       .map(stripAnsi);
     const tool = unifiedToolLines(
-      readMod,
+      "read",
       {
         content: [{ type: "text", text: "p\nq" }],
         details: { _fullOutput: "p\nq" },
@@ -521,7 +527,7 @@ describe("VAL-CROSS-005: full end-to-end turn runs with no regression, clean age
     // All four areas present simultaneously:
     expect(joined).toContain("memory_search"); // memory injected
     expect(joined).toContain("┃ "); // thinking block
-    expect(joined).toContain("read"); // unified tool block
+    expect(joined).toContain("Read"); // unified tool block
     expect(joined).toContain("╭"); // boxed editor (blinker active)
     expect(barColored[0]).toContain("\x1b[38;2;255;"); // red ━ sweep visible (colored)
     expect(joined).toContain("↳"); // tool arrow line

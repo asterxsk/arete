@@ -2,11 +2,10 @@
 //
 // Goal: any tool that is NOT shipped with a dedicated per-tool render module
 // (read/write/edit/ls/grep/find, and the combined Execute tool registered under
-// bash/pwsh/powershell) must still render in the unified format:
+// bash/pwsh/powershell) must still render in the unified format.
 //
-//   <glow tool title>                  (glowLabel — greyish-white toolTitle)
-//   ↳ <muted summary> [(count)]<hint>  (outputArrowLine — muted)
-//   ─────────────                     (full-width border separator)
+// Rendering is delegated to resolveTemplate/patchTool in rendering.ts, which
+// provides a generic fallback for any tool name.
 //
 // Mirrors the archived compactui monkey-patch pattern:
 //   - patch `ToolExecutionComponent.prototype.render` so unknown tools are
@@ -20,23 +19,19 @@
 //
 // Everything is guarded with try/catch and an idempotent `__patched` flag so
 // the patch never crashes the host and cannot be applied twice.
-//
-// The peer classes are imported statically (same ESM-only pattern as
-// bar.ts / patch-thinking.ts). If they are unavailable the patch is skipped
-// gracefully rather than throwing.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { InteractiveMode, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { Spacer } from "@earendil-works/pi-tui";
 
-import { unifiedBlock } from "./rendering.js";
+import { resolveTemplate } from "./rendering.js";
 
 // ── Constants ──────────────────────────────────────────────────────────
 
 /**
- * Tool names that already have a dedicated unified renderer (see
- * tools/{read,write,edit,ls,grep,find}.ts and tools/execute.ts). These are
- * left to the host's normal render path; only the rest are intercepted.
+ * Tool names that already have a dedicated unified renderer (read/write/edit/
+ * ls/grep/find/bash/pwsh/powershell). These are left to the host's normal
+ * render path; only the rest are intercepted.
  */
 export const DEDICATED_TOOLS = new Set([
   "read",
@@ -56,14 +51,11 @@ export const SUPPRESSED_TOOLS = new Set(["todo"]);
 // Convenience flag name shared with rendering primitives (avoid duplication).
 const PATCH_FLAG = "__tui_patchTools_patched";
 
-// ── Passthrough theme ────────────────────────────────────────────────
+// ── Passthrough theme ─────────────────────────────────────────────────
 //
-// `ToolExecutionComponent.prototype.render(width)` does not receive the active
-// theme; the host applies theme tokens inside the per-tool renderCall/renderResult
-// callbacks. For the render() backstop (tools registered BEFORE our registerTool
-// patches ran) we use a passthrough theme so the unified structure still renders
-// without color — no crash, no raw dump. Tools caught by the registerTool patches
-// get the REAL theme from the host renderCall/renderResult signature.
+// For the render() backstop (tools registered BEFORE our registerTool patches
+// ran) we use a passthrough theme so the unified structure still renders
+// without color.
 
 const PASSTHROUGH_THEME: any = {
   fg: (_color: string, text: string) => text,
@@ -72,90 +64,12 @@ const PASSTHROUGH_THEME: any = {
   inverse: (text: string) => text,
 };
 
-// ── Unified render helpers for unknown tools ────────────────────────
-
-/** Resolve a readable summary for an unknown tool's call (from its args). */
-function callSummary(_toolName: string, args: any): string {
-  if (!args || typeof args !== "object") return "invoke";
-  const displayVal =
-    args.query ||
-    args.Query ||
-    args.url ||
-    args.Url ||
-    args.pattern ||
-    args.path ||
-    args.DirectoryPath ||
-    args.command ||
-    args.CommandLine ||
-    args.prompt ||
-    "";
-  return displayVal ? String(displayVal) : "invoke";
-}
-
-/** Resolve a result summary for an unknown tool. */
-function resultSummary(result: any): { summary: string; count?: number; failed: boolean } {
-  if (!result) return { summary: "running", failed: false };
-  if (result.isError) return { summary: "failed", failed: true };
-  const text = result.content?.map((c: any) => (c.type === "text" ? c.text : "")).join("\n") ?? "";
-  const lines = text.split("\n").filter((l: string) => l.trim());
-  const count = lines.length;
-  if (count === 0) return { summary: "done", failed: false };
-  return { summary: "output", count, failed: false };
-}
-
-/** Build a unified block Component for an unknown tool (uses given theme). */
-function unknownBlock(
-  theme: any,
-  toolName: string,
-  args: any,
-  result: any,
-  expanded: boolean,
-): any {
-  const name = toolName || "unknown";
-  const call = callSummary(name, args);
-
-  if (!expanded) {
-    const { summary, count, failed } = resultSummary(result);
-    return unifiedBlock(theme, {
-      name,
-      argSummary: call,
-      summary: failed ? "failed" : summary,
-      count: failed ? undefined : count,
-    });
-  }
-
-  // Expanded view: dump captured output if present.
-  const details = result?.details as Record<string, unknown> | undefined;
-  const full =
-    (details?._fullOutput as string) ??
-    (details?.stderr as string) ??
-    result?.content?.map((c: any) => (c.type === "text" ? c.text : "")).join("\n") ??
-    "";
-  const lines = full ? full.split("\n") : ["(no output)"];
-  return unifiedBlock(theme, {
-    name,
-    argSummary: call,
-    summary: failed ? "failed" : "output",
-    count: lines.length,
-    body: () => lines,
-  });
-}
-
-/** Render a unknown-tool unified block to string[] (used by the prototype patch). */
-function renderUnknownToString(theme: any, comp: any, width: number): string[] {
-  try {
-    return comp.render(width);
-  } catch {
-    return [theme.fg("muted", "↳ tool output")];
-  }
-}
-
 // ── Per-registration patch (instance + prototype registerTool) ───────
 
 /**
- * Give an unknown/generic tool a unified renderCall/renderResult so its call
- * and result are drawn in the unified format. Known tools and tools that
- * already ship their own renderer are left untouched. Idempotent.
+ * Give an unknown/generic tool a unified renderCall/renderResult via
+ * resolveTemplate in rendering.ts. Known tools and tools that already ship
+ * their own renderer are left untouched. Idempotent.
  */
 function unifyUnknownTool(tool: any): void {
   if (!tool || typeof tool !== "object") return;
@@ -166,19 +80,13 @@ function unifyUnknownTool(tool: any): void {
   // Skip a tool that already provides its own custom render shell.
   if (tool.renderShell === "self" && typeof tool.renderCall === "function") return;
 
+  const template = resolveTemplate(tool);
+  if (!template) return;
+
   (tool as any).__tui_unknown_patched = true;
   tool.renderShell = "self";
-
-  tool.renderCall = (args: any, theme: any, ctx: any) => {
-    const expanded = Boolean(ctx?.expanded);
-    return unknownBlock(theme ?? PASSTHROUGH_THEME, name, args ?? tool.args, null, expanded);
-  };
-
-  tool.renderResult = (result: any, opts: any, theme: any, ctx: any) => {
-    const expanded = Boolean(opts?.expanded);
-    const args = ctx?.args ?? tool.args ?? null;
-    return unknownBlock(theme ?? PASSTHROUGH_THEME, name, args, result, expanded);
-  };
+  tool.renderCall = template.renderCall;
+  tool.renderResult = template.renderResult;
 }
 
 // ── Public entry point ───────────────────────────────────────────────
@@ -239,17 +147,20 @@ function patchToolExecutionRenderBackstop(): void {
       return Array.isArray(out) ? out : [];
     }
 
-    // Unknown tool: render the unified block through a passthrough theme.
+    // Unknown tool: resolve template and render through it.
     try {
-      const comp = unknownBlock(
+      const fakeTool = { name };
+      const template = resolveTemplate(fakeTool as any);
+      if (!template || !template.renderResult) return [];
+
+      const comp = template.renderResult(
+        this.result ?? { content: [] },
+        { expanded: Boolean(this.expanded) },
         PASSTHROUGH_THEME,
-        name || "unknown",
-        this.args,
-        this.result,
-        Boolean(this.expanded),
+        { args: this.args, isError: this.result?.isError },
       );
-      const lines = renderUnknownToString(PASSTHROUGH_THEME, comp, w);
-      // Drop any leading blank line the block may have emitted.
+      const lines = Array.isArray(comp) ? comp : comp.render(w);
+      // Drop any leading blank line.
       while (lines.length > 0 && lines[0].trim() === "") lines.shift();
       return lines;
     } catch {
